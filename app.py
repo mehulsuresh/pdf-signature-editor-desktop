@@ -229,6 +229,8 @@ class PdfSigningApp:
     MAX_ZOOM = 4.0
     ZOOM_STEP = 1.15
     APP_TITLE = "SignCanvas PDF"
+    EXPORT_STAMP_DPI = 300
+    MAX_EXPORT_STAMP_DIM = 4096
     INK_COLORS = {
         "Black": "#000000",
         "Blue": "#1D4ED8",
@@ -940,8 +942,21 @@ class PdfSigningApp:
             self._render_page()
 
     def _stamp_to_png_bytes(self, stamp: Image.Image, placement: Placement) -> bytes:
-        width = max(1, int(placement.x1 - placement.x0))
-        height = max(1, int(placement.y1 - placement.y0))
+        # Convert PDF points to export pixels at higher DPI for sharper output.
+        px_per_point = self.EXPORT_STAMP_DPI / 72.0
+        width = max(1, int((placement.x1 - placement.x0) * px_per_point))
+        height = max(1, int((placement.y1 - placement.y0) * px_per_point))
+
+        # Prevent runaway memory usage for very large placements.
+        scale_limit = min(
+            1.0,
+            self.MAX_EXPORT_STAMP_DIM / max(width, 1),
+            self.MAX_EXPORT_STAMP_DIM / max(height, 1),
+        )
+        if scale_limit < 1.0:
+            width = max(1, int(width * scale_limit))
+            height = max(1, int(height * scale_limit))
+
         tinted = self._tint_stamp(stamp, placement.color)
         resized = tinted.resize((width, height), Image.Resampling.LANCZOS)
         output = io.BytesIO()
