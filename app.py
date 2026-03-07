@@ -2,11 +2,11 @@ import io
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Optional
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 
 @dataclass
@@ -16,6 +16,7 @@ class Placement:
     y0: float
     x1: float
     y1: float
+    color: str = "#000000"
     text: str = ""
     font_size: float = 16.0
 
@@ -108,6 +109,108 @@ class SignaturePad(tk.Toplevel):
         self.destroy()
 
 
+class TypedSignatureDialog(tk.Toplevel):
+    def __init__(self, master: tk.Misc, font_options: dict[str, Optional[str]]):
+        super().__init__(master)
+        self.title("Typed Signature")
+        self.resizable(False, False)
+        self.grab_set()
+
+        self.font_options = font_options
+        self.name_var = tk.StringVar(value="Your Name")
+        self.style_var = tk.StringVar(value=next(iter(font_options.keys())))
+        self.size_var = tk.StringVar(value="96")
+        self.result = None
+
+        frame = ttk.Frame(self, padding=12)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Name").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(frame, textvariable=self.name_var, width=32).grid(row=0, column=1, sticky="ew", pady=(0, 6))
+
+        ttk.Label(frame, text="Style").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Combobox(
+            frame,
+            textvariable=self.style_var,
+            state="readonly",
+            values=list(font_options.keys()),
+            width=28,
+        ).grid(row=1, column=1, sticky="ew", pady=(0, 6))
+
+        ttk.Label(frame, text="Font Size").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Spinbox(frame, from_=40, to=200, textvariable=self.size_var, width=8).grid(row=2, column=1, sticky="w", pady=(0, 6))
+
+        ttk.Label(
+            frame,
+            text="Tip: script fonts vary by machine; use Draw Signature if you want full control.",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=4, column=0, columnspan=2, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        ttk.Button(actions, text="Cancel", command=self._cancel).pack(side="right")
+        ttk.Button(actions, text="Create", command=self._create).pack(side="right", padx=(0, 8))
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.destroy()
+
+    def _resolve_font(self, font_path: Optional[str], font_size: int) -> ImageFont.ImageFont:
+        if font_path:
+            try:
+                return ImageFont.truetype(font_path, font_size)
+            except Exception:
+                pass
+        for fallback in ("arial.ttf", "segoeui.ttf", "calibri.ttf"):
+            try:
+                return ImageFont.truetype(fallback, font_size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def _create(self) -> None:
+        text = self.name_var.get().strip()
+        if not text:
+            messagebox.showwarning("Missing Name", "Please enter text for the signature.")
+            return
+
+        try:
+            font_size = int(float(self.size_var.get()))
+        except ValueError:
+            font_size = 96
+        font_size = min(max(font_size, 40), 220)
+
+        font_name = self.style_var.get()
+        font_path = self.font_options.get(font_name)
+        try:
+            font = self._resolve_font(font_path, font_size)
+        except Exception as exc:
+            messagebox.showerror("Font Error", f"Could not use selected style:\n{exc}")
+            return
+
+        probe = Image.new("RGBA", (10, 10), (255, 255, 255, 0))
+        probe_draw = ImageDraw.Draw(probe)
+        bbox = probe_draw.textbbox((0, 0), text, font=font)
+        if bbox is None:
+            messagebox.showwarning("No Text", "Unable to create signature image from text.")
+            return
+
+        width = max(1, bbox[2] - bbox[0])
+        height = max(1, bbox[3] - bbox[1])
+        pad_x = max(16, width // 12)
+        pad_y = max(12, height // 7)
+
+        image = Image.new("RGBA", (width + pad_x * 2, height + pad_y * 2), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(image)
+        draw.text((pad_x - bbox[0], pad_y - bbox[1]), text, font=font, fill=(0, 0, 0, 255))
+
+        alpha = image.getchannel("A")
+        tight_bbox = alpha.getbbox()
+        self.result = image.crop(tight_bbox) if tight_bbox else image
+        self.destroy()
+
+
 class PdfSigningApp:
     STAMP_FILES = {
         "signature": Path("signature_stamp.png"),
@@ -119,6 +222,15 @@ class PdfSigningApp:
     MAX_ZOOM = 4.0
     ZOOM_STEP = 1.15
     APP_TITLE = "SignCanvas PDF"
+    INK_COLORS = {
+        "Black": "#000000",
+        "Blue": "#1D4ED8",
+        "Navy": "#0F172A",
+        "Green": "#166534",
+        "Red": "#B91C1C",
+        "Purple": "#6D28D9",
+        "Custom": "#000000",
+    }
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -139,10 +251,13 @@ class PdfSigningApp:
         self.overlay_tk_images = []
         self.overlay_canvas_ids = []
         self.overlay_text_ids = []
+        self.available_signature_fonts = self._find_signature_fonts()
 
         self.active_tool = tk.StringVar(value="signature")
         self.text_var = tk.StringVar(value="Approved")
         self.text_size_var = tk.StringVar(value="16")
+        self.ink_color_name_var = tk.StringVar(value="Black")
+        self.ink_color_hex = self.INK_COLORS["Black"]
         self.status_var = tk.StringVar(value="Open a PDF, then place signature/initials/text.")
 
         self.selected_index: Optional[int] = None
@@ -162,7 +277,19 @@ class PdfSigningApp:
         ttk.Button(toolbar, text="Open PDF", command=self.open_pdf).pack(side="left")
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Button(toolbar, text="Draw Signature", command=lambda: self.draw_stamp("signature")).pack(side="left")
+        ttk.Button(toolbar, text="Type Signature", command=self.type_signature).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Draw Initials", command=lambda: self.draw_stamp("initials")).pack(side="left", padx=(6, 0))
+        ttk.Label(toolbar, text="Ink:").pack(side="left", padx=(10, 4))
+        self.ink_color_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.ink_color_name_var,
+            state="readonly",
+            width=8,
+            values=list(self.INK_COLORS.keys()),
+        )
+        self.ink_color_combo.pack(side="left")
+        self.ink_color_combo.bind("<<ComboboxSelected>>", self.on_ink_color_change)
+        ttk.Button(toolbar, text="Custom Ink", command=self.pick_custom_ink_color).pack(side="left", padx=(6, 0))
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Radiobutton(toolbar, text="Place Signature", variable=self.active_tool, value="signature").pack(side="left")
         ttk.Radiobutton(toolbar, text="Place Initials", variable=self.active_tool, value="initials").pack(side="left", padx=(6, 0))
@@ -247,7 +374,7 @@ class PdfSigningApp:
         if missing:
             self.status_var.set(f"Missing {' and '.join(missing)}. Draw them before placing.")
         else:
-            self.status_var.set("Use Place tools to add items, or Select/Move to resize and reposition.")
+            self.status_var.set("Use Place tools to add items, set ink color, or Select/Move to resize and reposition.")
 
     def draw_stamp(self, kind: str) -> None:
         pad = SignaturePad(self.root, f"Draw {kind.title()}")
@@ -258,6 +385,97 @@ class PdfSigningApp:
         self._save_stamp_to_disk(kind)
         self._set_status_for_missing_stamps()
         self._render_page()
+
+    def type_signature(self) -> None:
+        dialog = TypedSignatureDialog(self.root, self.available_signature_fonts)
+        self.root.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.stamps["signature"] = dialog.result
+        self._save_stamp_to_disk("signature")
+        self._set_status_for_missing_stamps()
+        self._render_page()
+
+    def on_ink_color_change(self, _event: tk.Event = None) -> None:
+        color_name = self.ink_color_name_var.get()
+        if color_name == "Custom":
+            self.pick_custom_ink_color()
+            return
+        self.ink_color_hex = self.INK_COLORS.get(color_name, "#000000")
+        self._apply_color_to_selected_item()
+        self.status_var.set(f"Ink color set to {color_name}. New signature/initial placements will use it.")
+
+    def pick_custom_ink_color(self) -> None:
+        chosen = colorchooser.askcolor(color=self.ink_color_hex, title="Choose Signature Color", parent=self.root)
+        if not chosen or not chosen[1]:
+            return
+        self.ink_color_hex = chosen[1]
+        self.ink_color_name_var.set("Custom")
+        self._apply_color_to_selected_item()
+        self.status_var.set(f"Custom ink color selected: {self.ink_color_hex}")
+
+    def _find_signature_fonts(self) -> dict[str, Optional[str]]:
+        fonts_dir = Path("C:/Windows/Fonts")
+        candidates = {
+            "Segoe Script": ["segoesc.ttf", "segoescb.ttf"],
+            "Lucida Handwriting": ["lhandw.ttf"],
+            "Brush Script MT": ["brushsci.ttf", "BRUSHSCI.TTF"],
+            "French Script": ["FRSCRIPT.TTF", "frscript.ttf"],
+            "Segoe Print": ["segoepr.ttf", "segoeprb.ttf"],
+            "Calibri Italic": ["calibrii.ttf"],
+            "Arial Italic": ["ariali.ttf"],
+        }
+        discovered: dict[str, Optional[str]] = {}
+        for name, files in candidates.items():
+            font_path = None
+            for filename in files:
+                probe = fonts_dir / filename
+                if probe.exists():
+                    font_path = str(probe)
+                    break
+            if font_path:
+                discovered[name] = font_path
+        discovered["System Default"] = None
+        return discovered
+
+    def _parse_hex_color(self, value: str) -> tuple[int, int, int]:
+        color = value.strip().lstrip("#")
+        if len(color) != 6:
+            return (0, 0, 0)
+        try:
+            return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
+        except ValueError:
+            return (0, 0, 0)
+
+    def _tint_stamp(self, stamp: Image.Image, color_hex: str) -> Image.Image:
+        r, g, b = self._parse_hex_color(color_hex)
+        alpha = stamp.getchannel("A")
+        tinted = Image.new("RGBA", stamp.size, (r, g, b, 255))
+        tinted.putalpha(alpha)
+        return tinted
+
+    def _apply_color_to_selected_item(self) -> None:
+        if self.doc is None or self.selected_index is None:
+            return
+        items = self._current_page_items()
+        if not (0 <= self.selected_index < len(items)):
+            return
+        item = items[self.selected_index]
+        if item.kind not in ("signature", "initials"):
+            return
+        item.color = self.ink_color_hex
+        self._refresh_overlays()
+
+    def _sync_ink_controls_with_color(self, color_hex: str) -> None:
+        normalized = color_hex.lower()
+        self.ink_color_hex = normalized
+        for name, value in self.INK_COLORS.items():
+            if name == "Custom":
+                continue
+            if value.lower() == normalized:
+                self.ink_color_name_var.set(name)
+                return
+        self.ink_color_name_var.set("Custom")
 
     def _close_document(self) -> None:
         if self.doc is not None:
@@ -420,7 +638,8 @@ class PdfSigningApp:
                 stamp = self.stamps.get(placement.kind)
                 if stamp is None:
                     continue
-                display_stamp = stamp.resize((max(1, int(x1 - x0)), max(1, int(y1 - y0))), Image.Resampling.LANCZOS)
+                tinted_stamp = self._tint_stamp(stamp, placement.color)
+                display_stamp = tinted_stamp.resize((max(1, int(x1 - x0)), max(1, int(y1 - y0))), Image.Resampling.LANCZOS)
                 tk_stamp = ImageTk.PhotoImage(display_stamp)
                 self.overlay_tk_images.append(tk_stamp)
                 image_id = self.canvas.create_image(x0, y0, anchor="nw", image=tk_stamp)
@@ -529,7 +748,16 @@ class PdfSigningApp:
                 self.status_var.set(f"Draw your {tool} first.")
                 return
             rect = self._make_default_rect(page_rect, x_pdf, y_pdf, tool)
-            items.append(Placement(kind=tool, x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1))
+            items.append(
+                Placement(
+                    kind=tool,
+                    x0=rect.x0,
+                    y0=rect.y0,
+                    x1=rect.x1,
+                    y1=rect.y1,
+                    color=self.ink_color_hex,
+                )
+            )
             self.last_stamp_sizes[tool] = (rect.width, rect.height)
             self.selected_index = len(items) - 1
             self.status_var.set("Placed stamp. Use Select/Move and drag the blue corner to resize.")
@@ -582,6 +810,8 @@ class PdfSigningApp:
         self.drag_mode = None
         if hit_idx is not None:
             item = self._current_page_items()[hit_idx]
+            if item.kind in ("signature", "initials"):
+                self._sync_ink_controls_with_color(item.color)
             if item.kind in ("signature", "initials") and self._over_resize_handle(item, x_pdf, y_pdf):
                 self.drag_mode = "resize"
                 self.status_var.set("Resizing selected stamp.")
@@ -682,13 +912,10 @@ class PdfSigningApp:
     def _stamp_to_png_bytes(self, stamp: Image.Image, placement: Placement) -> bytes:
         width = max(1, int(placement.x1 - placement.x0))
         height = max(1, int(placement.y1 - placement.y0))
-        resized = stamp.resize((width, height), Image.Resampling.LANCZOS)
-
-        alpha = resized.getchannel("A")
-        black = Image.new("RGBA", resized.size, (0, 0, 0, 255))
-        black.putalpha(alpha)
+        tinted = self._tint_stamp(stamp, placement.color)
+        resized = tinted.resize((width, height), Image.Resampling.LANCZOS)
         output = io.BytesIO()
-        black.save(output, format="PNG")
+        resized.save(output, format="PNG")
         return output.getvalue()
 
     def save_signed_pdf(self) -> None:
