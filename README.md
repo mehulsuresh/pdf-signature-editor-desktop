@@ -19,6 +19,7 @@ Draw signatures and initials, drop them anywhere in a PDF, add text boxes, and e
 ## Features
 - Open any PDF
 - Draw and save `signature` and `initials`
+- Import signature from PNG (auto background removal + contrast boost)
 - Create typed signatures in cursive-style fonts (no drawing required)
 - Create typed initials in cursive-style fonts (no drawing required)
 - Choose ink color for signatures/initials/text (preset or custom)
@@ -46,6 +47,7 @@ python app.py
 2. Create a signature with either:
    - `Draw Signature`
    - `Type Signature` (cursive-style font)
+   - `Import Signature PNG` (auto cleanup)
 3. Create initials with either:
    - `Draw Initials`
    - `Type Initials` (cursive-style font)

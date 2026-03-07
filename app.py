@@ -6,7 +6,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Optional
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFont, ImageOps, ImageTk
 
 
 @dataclass
@@ -289,6 +289,7 @@ class PdfSigningApp:
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Button(toolbar, text="Draw Signature", command=lambda: self.draw_stamp("signature")).pack(side="left")
         ttk.Button(toolbar, text="Type Signature", command=self.type_signature).pack(side="left", padx=(6, 0))
+        ttk.Button(toolbar, text="Import Signature PNG", command=self.import_signature_png).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Draw Initials", command=lambda: self.draw_stamp("initials")).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Type Initials", command=self.type_initials).pack(side="left", padx=(6, 0))
         ttk.Label(toolbar, text="Ink:").pack(side="left", padx=(10, 4))
@@ -430,6 +431,29 @@ class PdfSigningApp:
         self._set_status_for_missing_stamps()
         self._render_page()
 
+    def import_signature_png(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Import Signature PNG",
+            filetypes=[("PNG files", "*.png"), ("Image files", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            imported = Image.open(path).convert("RGBA")
+            processed = self._process_imported_signature(imported)
+        except Exception as exc:
+            messagebox.showerror("Import Failed", f"Could not import signature image:\n{exc}")
+            return
+        if processed is None:
+            messagebox.showwarning("Import Failed", "Could not detect signature strokes. Try a darker image.")
+            return
+
+        self.stamps["signature"] = processed
+        self._save_stamp_to_disk("signature")
+        self._set_status_for_missing_stamps()
+        self.status_var.set("Imported signature and auto-processed (background removed + contrast boosted).")
+        self._render_page()
+
     def on_ink_color_change(self, _event: tk.Event = None) -> None:
         color_name = self.ink_color_name_var.get()
         if color_name == "Custom":
@@ -489,6 +513,38 @@ class PdfSigningApp:
     def _fitz_color(self, color_hex: str) -> tuple[float, float, float]:
         r, g, b = self._parse_hex_color(color_hex)
         return (r / 255.0, g / 255.0, b / 255.0)
+
+    def _process_imported_signature(self, image: Image.Image) -> Optional[Image.Image]:
+        rgb = image.convert("RGB")
+
+        # Estimate white background by taking the minimum channel, then invert to isolate ink.
+        r, g, b = rgb.split()
+        min_rgb = ImageChops.darker(ImageChops.darker(r, g), b)
+        darkness = ImageOps.invert(min_rgb)
+
+        # Build alpha mask from darkness with soft thresholding.
+        low = 10
+        scale = 255.0 / 90.0
+        alpha = darkness.point(lambda p: 0 if p < low else min(255, int((p - low) * scale)))
+        alpha = ImageEnhance.Contrast(alpha).enhance(1.45)
+
+        # Boost legibility while preserving original stroke hue.
+        boosted = ImageEnhance.Contrast(rgb).enhance(1.45)
+        boosted = ImageEnhance.Color(boosted).enhance(1.2)
+        boosted = ImageEnhance.Brightness(boosted).enhance(0.82)
+
+        out = boosted.convert("RGBA")
+        out.putalpha(alpha)
+
+        bbox = out.getchannel("A").getbbox()
+        if bbox is None:
+            return None
+
+        trimmed = out.crop(bbox)
+        # Ensure tiny imports are still usable.
+        if trimmed.width < 8 or trimmed.height < 8:
+            return None
+        return trimmed
 
     def _tint_stamp(self, stamp: Image.Image, color_hex: str) -> Image.Image:
         r, g, b = self._parse_hex_color(color_hex)
