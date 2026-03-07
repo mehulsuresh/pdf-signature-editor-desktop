@@ -62,6 +62,10 @@ pyinstaller --noconfirm --clean --windowed --name SignCanvasPDF app.py
 Output:
 - `dist\SignCanvasPDF\SignCanvasPDF.exe`
 
+## CI Build
+- GitHub Actions workflow included: `.github/workflows/windows-build.yml`
+- On every push to `main`, it builds a Windows EXE and uploads it as an artifact.
+
 ## Project Structure
 - `app.py` - desktop app UI and PDF signing logic
 - `requirements.txt` - runtime dependencies
