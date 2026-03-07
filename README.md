@@ -66,6 +66,15 @@ Output:
 - GitHub Actions workflow included: `.github/workflows/windows-build.yml`
 - On every push to `main`, it builds a Windows EXE and uploads it as an artifact.
 
+## Publish to GitHub
+```powershell
+# 1) Authenticate once
+"C:\Program Files\GitHub CLI\gh.exe" auth login
+
+# 2) Create and push repository (default: public signcanvas-pdf)
+powershell -ExecutionPolicy Bypass -File .\scripts\publish_github.ps1
+```
+
 ## Project Structure
 - `app.py` - desktop app UI and PDF signing logic
 - `requirements.txt` - runtime dependencies
