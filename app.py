@@ -1,0 +1,753 @@
+import io
+import tkinter as tk
+from dataclasses import dataclass
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import Optional
+
+import fitz  # PyMuPDF
+from PIL import Image, ImageDraw, ImageTk
+
+
+@dataclass
+class Placement:
+    kind: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str = ""
+    font_size: float = 16.0
+
+
+class SignaturePad(tk.Toplevel):
+    def __init__(self, master: tk.Misc, title: str, width: int = 600, height: int = 220):
+        super().__init__(master)
+        self.title(title)
+        self.resizable(False, False)
+        self.grab_set()
+
+        self._width = width
+        self._height = height
+        self._image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+        self._draw = ImageDraw.Draw(self._image)
+        self._last_x = None
+        self._last_y = None
+        self.result = None
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            self,
+            text="Draw with your mouse. Use Clear to redraw.",
+            padding=(10, 8),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.canvas = tk.Canvas(self, width=width, height=height, bg="white", cursor="pencil")
+        self.canvas.grid(row=1, column=0, padx=10, pady=4)
+        self.canvas.bind("<ButtonPress-1>", self._start_stroke)
+        self.canvas.bind("<B1-Motion>", self._draw_stroke)
+        self.canvas.bind("<ButtonRelease-1>", self._end_stroke)
+
+        button_bar = ttk.Frame(self, padding=10)
+        button_bar.grid(row=2, column=0, sticky="ew")
+        button_bar.columnconfigure(0, weight=1)
+
+        ttk.Button(button_bar, text="Clear", command=self._clear).pack(side="left")
+        ttk.Button(button_bar, text="Cancel", command=self._cancel).pack(side="right")
+        ttk.Button(button_bar, text="Save", command=self._save).pack(side="right", padx=(0, 8))
+
+    def _start_stroke(self, event: tk.Event) -> None:
+        self._last_x = event.x
+        self._last_y = event.y
+
+    def _draw_stroke(self, event: tk.Event) -> None:
+        if self._last_x is None or self._last_y is None:
+            return
+        self.canvas.create_line(
+            self._last_x,
+            self._last_y,
+            event.x,
+            event.y,
+            fill="black",
+            width=3,
+            capstyle=tk.ROUND,
+            smooth=True,
+        )
+        self._draw.line((self._last_x, self._last_y, event.x, event.y), fill=(0, 0, 0, 255), width=3)
+        self._last_x = event.x
+        self._last_y = event.y
+
+    def _end_stroke(self, _event: tk.Event) -> None:
+        self._last_x = None
+        self._last_y = None
+
+    def _clear(self) -> None:
+        self.canvas.delete("all")
+        self._image = Image.new("RGBA", (self._width, self._height), (255, 255, 255, 0))
+        self._draw = ImageDraw.Draw(self._image)
+
+    def _trim(self, image: Image.Image) -> Image.Image:
+        alpha = image.getchannel("A")
+        bbox = alpha.getbbox()
+        if bbox is None:
+            return image.crop((0, 0, 1, 1))
+        return image.crop(bbox)
+
+    def _save(self) -> None:
+        trimmed = self._trim(self._image)
+        if trimmed.size == (1, 1):
+            messagebox.showwarning("Nothing drawn", "Please draw before saving.")
+            return
+        self.result = trimmed
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.destroy()
+
+
+class PdfSigningApp:
+    STAMP_FILES = {
+        "signature": Path("signature_stamp.png"),
+        "initials": Path("initials_stamp.png"),
+    }
+
+    HANDLE_SIZE_PX = 18
+    MIN_ZOOM = 0.35
+    MAX_ZOOM = 4.0
+    ZOOM_STEP = 1.15
+    APP_TITLE = "SignCanvas PDF"
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title(self.APP_TITLE)
+        self.root.geometry("1180x900")
+
+        self.pdf_path = None
+        self.doc = None
+        self.page_index = 0
+        self.page_scale = 1.0
+        self.zoom_factor = 1.0
+        self.current_photo = None
+        self.canvas_image_id = None
+
+        self.page_placements = {}
+        self.stamps = {"signature": None, "initials": None}
+        self.last_stamp_sizes = {"signature": None, "initials": None}
+        self.overlay_tk_images = []
+        self.overlay_canvas_ids = []
+        self.overlay_text_ids = []
+
+        self.active_tool = tk.StringVar(value="signature")
+        self.text_var = tk.StringVar(value="Approved")
+        self.text_size_var = tk.StringVar(value="16")
+        self.status_var = tk.StringVar(value="Open a PDF, then place signature/initials/text.")
+
+        self.selected_index: Optional[int] = None
+        self.drag_mode = None
+        self.drag_offset_x = 0.0
+        self.drag_offset_y = 0.0
+        self.selection_rect_id = None
+        self.resize_handle_id = None
+
+        self._build_ui()
+        self._load_saved_stamps()
+
+    def _build_ui(self) -> None:
+        toolbar = ttk.Frame(self.root, padding=8)
+        toolbar.pack(side="top", fill="x")
+
+        ttk.Button(toolbar, text="Open PDF", command=self.open_pdf).pack(side="left")
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(toolbar, text="Draw Signature", command=lambda: self.draw_stamp("signature")).pack(side="left")
+        ttk.Button(toolbar, text="Draw Initials", command=lambda: self.draw_stamp("initials")).pack(side="left", padx=(6, 0))
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Radiobutton(toolbar, text="Place Signature", variable=self.active_tool, value="signature").pack(side="left")
+        ttk.Radiobutton(toolbar, text="Place Initials", variable=self.active_tool, value="initials").pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(toolbar, text="Place Text", variable=self.active_tool, value="text").pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(toolbar, text="Select/Move", variable=self.active_tool, value="select").pack(side="left", padx=(6, 0))
+
+        ttk.Label(toolbar, text="Text:").pack(side="left", padx=(10, 4))
+        ttk.Entry(toolbar, textvariable=self.text_var, width=18).pack(side="left")
+        ttk.Label(toolbar, text="Size:").pack(side="left", padx=(8, 4))
+        ttk.Spinbox(toolbar, from_=8, to=96, textvariable=self.text_size_var, width=4).pack(side="left")
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(toolbar, text="Delete Selected", command=self.delete_selected).pack(side="left")
+        ttk.Button(toolbar, text="Save Signed PDF", command=self.save_signed_pdf).pack(side="left", padx=(8, 0))
+
+        nav = ttk.Frame(self.root, padding=(8, 2, 8, 8))
+        nav.pack(side="top", fill="x")
+
+        ttk.Button(nav, text="Prev Page", command=self.prev_page).pack(side="left")
+        ttk.Button(nav, text="Next Page", command=self.next_page).pack(side="left", padx=(6, 0))
+        ttk.Button(nav, text="Clear Page Items", command=self.clear_page_items).pack(side="left", padx=(16, 0))
+        ttk.Separator(nav, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(nav, text="Zoom -", command=self.zoom_out).pack(side="left")
+        ttk.Button(nav, text="Zoom +", command=self.zoom_in).pack(side="left", padx=(6, 0))
+        ttk.Button(nav, text="Fit", command=self.zoom_fit).pack(side="left", padx=(6, 0))
+
+        self.zoom_label = ttk.Label(nav, text="Zoom: 100%")
+        self.zoom_label.pack(side="left", padx=12)
+
+        self.page_label = ttk.Label(nav, text="Page: -/-")
+        self.page_label.pack(side="left", padx=16)
+        ttk.Label(nav, textvariable=self.status_var).pack(side="left")
+
+        canvas_container = ttk.Frame(self.root)
+        canvas_container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        canvas_container.rowconfigure(0, weight=1)
+        canvas_container.columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(canvas_container, bg="#d0d0d0")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+
+        ybar = ttk.Scrollbar(canvas_container, orient="vertical", command=self.canvas.yview)
+        ybar.grid(row=0, column=1, sticky="ns")
+        xbar = ttk.Scrollbar(canvas_container, orient="horizontal", command=self.canvas.xview)
+        xbar.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        self.canvas.bind("<Button-1>", self.on_canvas_press)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self.on_mouse_wheel)
+        self.canvas.bind("<Control-MouseWheel>", self.on_mouse_wheel)
+        self.canvas.bind("<Button-4>", self.on_mouse_wheel)
+        self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<Shift-Button-4>", self.on_mouse_wheel)
+        self.canvas.bind("<Shift-Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<Control-Button-4>", self.on_mouse_wheel)
+        self.canvas.bind("<Control-Button-5>", self.on_mouse_wheel)
+        self.root.bind("<Delete>", self.delete_selected)
+        self.root.bind("<Control-plus>", lambda _e: self.zoom_in())
+        self.root.bind("<Control-equal>", lambda _e: self.zoom_in())
+        self.root.bind("<Control-minus>", lambda _e: self.zoom_out())
+        self.root.bind("<Control-0>", lambda _e: self.zoom_fit())
+
+    def _load_saved_stamps(self) -> None:
+        for kind, path in self.STAMP_FILES.items():
+            if path.exists():
+                try:
+                    self.stamps[kind] = Image.open(path).convert("RGBA")
+                except Exception:
+                    self.stamps[kind] = None
+        self._set_status_for_missing_stamps()
+
+    def _save_stamp_to_disk(self, kind: str) -> None:
+        stamp = self.stamps[kind]
+        if stamp is None:
+            return
+        stamp.save(self.STAMP_FILES[kind], format="PNG")
+
+    def _set_status_for_missing_stamps(self) -> None:
+        missing = [k for k, v in self.stamps.items() if v is None]
+        if missing:
+            self.status_var.set(f"Missing {' and '.join(missing)}. Draw them before placing.")
+        else:
+            self.status_var.set("Use Place tools to add items, or Select/Move to resize and reposition.")
+
+    def draw_stamp(self, kind: str) -> None:
+        pad = SignaturePad(self.root, f"Draw {kind.title()}")
+        self.root.wait_window(pad)
+        if pad.result is None:
+            return
+        self.stamps[kind] = pad.result
+        self._save_stamp_to_disk(kind)
+        self._set_status_for_missing_stamps()
+        self._render_page()
+
+    def _close_document(self) -> None:
+        if self.doc is not None:
+            self.doc.close()
+        self.doc = None
+        self.pdf_path = None
+        self.page_index = 0
+        self.zoom_factor = 1.0
+        self.page_placements = {}
+        self.selected_index = None
+        self.drag_mode = None
+        self.canvas.delete("all")
+        self.page_label.configure(text="Page: -/-")
+        self.zoom_label.configure(text="Zoom: 100%")
+
+    def open_pdf(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._close_document()
+        try:
+            self.doc = fitz.open(path)
+        except Exception as exc:
+            messagebox.showerror("Open failed", f"Could not open PDF:\n{exc}")
+            return
+        if self.doc.page_count == 0:
+            messagebox.showerror("Invalid PDF", "This PDF has no pages.")
+            self._close_document()
+            return
+        self.pdf_path = path
+        self.page_index = 0
+        self.zoom_factor = 1.0
+        self.page_placements = {}
+        self.selected_index = None
+        self._render_page()
+
+    def _fit_scale_for_page(self, page_rect: fitz.Rect) -> float:
+        self.root.update_idletasks()
+        available_w = max(self.canvas.winfo_width() - 30, 600)
+        available_h = max(self.canvas.winfo_height() - 30, 600)
+        sx = available_w / page_rect.width
+        sy = available_h / page_rect.height
+        return min(sx, sy, 2.0)
+
+    def _set_zoom(self, zoom_factor: float) -> None:
+        clamped = min(max(zoom_factor, self.MIN_ZOOM), self.MAX_ZOOM)
+        if abs(clamped - self.zoom_factor) < 0.0001:
+            return
+        self.zoom_factor = clamped
+        self._render_page()
+
+    def zoom_in(self) -> None:
+        if self.doc is None:
+            return
+        self._set_zoom(self.zoom_factor * self.ZOOM_STEP)
+
+    def zoom_out(self) -> None:
+        if self.doc is None:
+            return
+        self._set_zoom(self.zoom_factor / self.ZOOM_STEP)
+
+    def zoom_fit(self) -> None:
+        if self.doc is None:
+            return
+        self._set_zoom(1.0)
+
+    def on_mouse_wheel(self, event: tk.Event) -> str:
+        if self.doc is None:
+            return "break"
+        # Bit mask for Control key in Tk event.state.
+        ctrl_pressed = (getattr(event, "state", 0) & 0x0004) != 0
+        shift_pressed = (getattr(event, "state", 0) & 0x0001) != 0
+        delta = getattr(event, "delta", 0)
+        num = getattr(event, "num", 0)
+        wheel_up = delta > 0 or num == 4
+        wheel_down = delta < 0 or num == 5
+
+        if ctrl_pressed:
+            if wheel_up:
+                self.zoom_in()
+            elif wheel_down:
+                self.zoom_out()
+            return "break"
+
+        if shift_pressed:
+            if wheel_up:
+                self.canvas.xview_scroll(-1, "units")
+            elif wheel_down:
+                self.canvas.xview_scroll(1, "units")
+            return "break"
+
+        if wheel_up:
+            self.canvas.yview_scroll(-3, "units")
+        elif wheel_down:
+            self.canvas.yview_scroll(3, "units")
+        return "break"
+
+    def _current_page_items(self) -> list[Placement]:
+        return self.page_placements.setdefault(self.page_index, [])
+
+    def _render_page(self) -> None:
+        self.canvas.delete("all")
+        self.overlay_canvas_ids.clear()
+        self.overlay_tk_images.clear()
+        self.overlay_text_ids.clear()
+        self.selection_rect_id = None
+        self.resize_handle_id = None
+        if self.doc is None:
+            return
+
+        page = self.doc.load_page(self.page_index)
+        fit_scale = self._fit_scale_for_page(page.rect)
+        self.page_scale = fit_scale * self.zoom_factor
+        matrix = fitz.Matrix(self.page_scale, self.page_scale)
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        mode = "RGB" if pix.n < 4 else "RGBA"
+        image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+        self.current_photo = ImageTk.PhotoImage(image)
+
+        self.canvas_image_id = self.canvas.create_image(0, 0, anchor="nw", image=self.current_photo)
+        self.canvas.configure(scrollregion=(0, 0, pix.width, pix.height))
+        self.page_label.configure(text=f"Page: {self.page_index + 1}/{self.doc.page_count}")
+        self.zoom_label.configure(text=f"Zoom: {int(self.zoom_factor * 100)}%")
+        self._draw_overlays_for_page()
+
+    def _clear_overlay_visuals(self) -> None:
+        for item_id in self.overlay_canvas_ids:
+            self.canvas.delete(item_id)
+        self.overlay_canvas_ids.clear()
+        self.overlay_tk_images.clear()
+        self.overlay_text_ids.clear()
+        if self.selection_rect_id is not None:
+            self.canvas.delete(self.selection_rect_id)
+            self.selection_rect_id = None
+        if self.resize_handle_id is not None:
+            self.canvas.delete(self.resize_handle_id)
+            self.resize_handle_id = None
+
+    def _refresh_overlays(self) -> None:
+        if self.doc is None or self.canvas_image_id is None:
+            return
+        self._clear_overlay_visuals()
+        self._draw_overlays_for_page()
+
+    def _draw_overlays_for_page(self) -> None:
+        items = self._current_page_items()
+        if self.selected_index is not None and not (0 <= self.selected_index < len(items)):
+            self.selected_index = None
+
+        for idx, placement in enumerate(items):
+            x0 = placement.x0 * self.page_scale
+            y0 = placement.y0 * self.page_scale
+            x1 = placement.x1 * self.page_scale
+            y1 = placement.y1 * self.page_scale
+
+            if placement.kind in ("signature", "initials"):
+                stamp = self.stamps.get(placement.kind)
+                if stamp is None:
+                    continue
+                display_stamp = stamp.resize((max(1, int(x1 - x0)), max(1, int(y1 - y0))), Image.Resampling.LANCZOS)
+                tk_stamp = ImageTk.PhotoImage(display_stamp)
+                self.overlay_tk_images.append(tk_stamp)
+                image_id = self.canvas.create_image(x0, y0, anchor="nw", image=tk_stamp)
+                self.overlay_canvas_ids.append(image_id)
+            else:
+                display_font_size = max(8, int(placement.font_size * self.page_scale))
+                text_id = self.canvas.create_text(
+                    x0,
+                    y0,
+                    anchor="nw",
+                    text=placement.text,
+                    fill="black",
+                    font=("Arial", display_font_size),
+                )
+                self.overlay_text_ids.append(text_id)
+                self.overlay_canvas_ids.append(text_id)
+
+            if idx == self.selected_index:
+                self.selection_rect_id = self.canvas.create_rectangle(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    outline="#0078d7",
+                    width=2,
+                    dash=(4, 3),
+                )
+                self.overlay_canvas_ids.append(self.selection_rect_id)
+                if placement.kind in ("signature", "initials"):
+                    hs = self.HANDLE_SIZE_PX / 2
+                    self.resize_handle_id = self.canvas.create_rectangle(
+                        x1 - hs,
+                        y1 - hs,
+                        x1 + hs,
+                        y1 + hs,
+                        fill="#0078d7",
+                        outline="#005a9e",
+                        width=1,
+                    )
+                    self.overlay_canvas_ids.append(self.resize_handle_id)
+
+    def _canvas_to_pdf(self, event: tk.Event) -> tuple[float, float]:
+        return self.canvas.canvasx(event.x) / self.page_scale, self.canvas.canvasy(event.y) / self.page_scale
+
+    def _point_inside_page(self, x_pdf: float, y_pdf: float) -> bool:
+        if self.doc is None:
+            return False
+        rect = self.doc.load_page(self.page_index).rect
+        return rect.x0 <= x_pdf <= rect.x1 and rect.y0 <= y_pdf <= rect.y1
+
+    def _hit_test(self, x_pdf: float, y_pdf: float) -> Optional[int]:
+        items = self._current_page_items()
+        for idx in range(len(items) - 1, -1, -1):
+            p = items[idx]
+            if p.x0 <= x_pdf <= p.x1 and p.y0 <= y_pdf <= p.y1:
+                return idx
+        return None
+
+    def _over_resize_handle(self, placement: Placement, x_pdf: float, y_pdf: float) -> bool:
+        width = max(1e-6, placement.x1 - placement.x0)
+        height = max(1e-6, placement.y1 - placement.y0)
+        tol = max(10.0, (self.HANDLE_SIZE_PX * 1.25) / self.page_scale)
+        on_handle = (placement.x1 - tol) <= x_pdf <= (placement.x1 + tol) and (placement.y1 - tol) <= y_pdf <= (placement.y1 + tol)
+        in_corner_zone = x_pdf >= (placement.x0 + width * 0.6) and y_pdf >= (placement.y0 + height * 0.6)
+        return on_handle or in_corner_zone
+
+    def _make_default_rect(self, page_rect: fitz.Rect, click_x_pdf: float, click_y_pdf: float, kind: str) -> fitz.Rect:
+        stamp = self.stamps[kind]
+        aspect = stamp.height / max(1, stamp.width)
+
+        cached_size = self.last_stamp_sizes.get(kind)
+        if cached_size is not None:
+            width, height = cached_size
+            scale_to_fit = min(
+                1.0,
+                (page_rect.width * 0.95) / max(width, 1e-6),
+                (page_rect.height * 0.95) / max(height, 1e-6),
+            )
+            width *= scale_to_fit
+            height *= scale_to_fit
+        else:
+            width = page_rect.width * (0.28 if kind == "signature" else 0.16)
+            height = width * aspect
+
+        x0 = max(page_rect.x0, min(click_x_pdf - width / 2, page_rect.x1 - width))
+        y0 = max(page_rect.y0, min(click_y_pdf - height / 2, page_rect.y1 - height))
+        return fitz.Rect(x0, y0, x0 + width, y0 + height)
+
+    def _make_text_rect(self, page_rect: fitz.Rect, click_x_pdf: float, click_y_pdf: float, text: str, font_size: float) -> fitz.Rect:
+        width = max(page_rect.width * 0.10, (font_size * 0.55 * max(1, len(text))) + 18)
+        height = max(font_size * 1.6, 20)
+        x0 = max(page_rect.x0, min(click_x_pdf - width / 2, page_rect.x1 - width))
+        y0 = max(page_rect.y0, min(click_y_pdf - height / 2, page_rect.y1 - height))
+        return fitz.Rect(x0, y0, x0 + width, y0 + height)
+
+    def _place_active_item(self, x_pdf: float, y_pdf: float) -> None:
+        if self.doc is None:
+            return
+        page_rect = self.doc.load_page(self.page_index).rect
+        tool = self.active_tool.get()
+        items = self._current_page_items()
+
+        if tool in ("signature", "initials"):
+            stamp = self.stamps.get(tool)
+            if stamp is None:
+                self.status_var.set(f"Draw your {tool} first.")
+                return
+            rect = self._make_default_rect(page_rect, x_pdf, y_pdf, tool)
+            items.append(Placement(kind=tool, x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1))
+            self.last_stamp_sizes[tool] = (rect.width, rect.height)
+            self.selected_index = len(items) - 1
+            self.status_var.set("Placed stamp. Use Select/Move and drag the blue corner to resize.")
+            self._refresh_overlays()
+            return
+
+        if tool == "text":
+            text = self.text_var.get().strip()
+            if not text:
+                self.status_var.set("Enter text before placing a text box.")
+                return
+            try:
+                font_size = float(self.text_size_var.get())
+            except ValueError:
+                font_size = 16.0
+                self.text_size_var.set("16")
+            font_size = min(max(font_size, 8.0), 96.0)
+            rect = self._make_text_rect(page_rect, x_pdf, y_pdf, text, font_size)
+            items.append(
+                Placement(
+                    kind="text",
+                    x0=rect.x0,
+                    y0=rect.y0,
+                    x1=rect.x1,
+                    y1=rect.y1,
+                    text=text,
+                    font_size=font_size,
+                )
+            )
+            self.selected_index = len(items) - 1
+            self.status_var.set("Placed text. Use Select/Move to reposition.")
+            self._refresh_overlays()
+
+    def on_canvas_press(self, event: tk.Event) -> None:
+        if self.doc is None:
+            self.status_var.set("Open a PDF first.")
+            return
+        x_pdf, y_pdf = self._canvas_to_pdf(event)
+        if not self._point_inside_page(x_pdf, y_pdf):
+            return
+
+        tool = self.active_tool.get()
+        if tool != "select":
+            self.drag_mode = None
+            self._place_active_item(x_pdf, y_pdf)
+            return
+
+        hit_idx = self._hit_test(x_pdf, y_pdf)
+        self.selected_index = hit_idx
+        self.drag_mode = None
+        if hit_idx is not None:
+            item = self._current_page_items()[hit_idx]
+            if item.kind in ("signature", "initials") and self._over_resize_handle(item, x_pdf, y_pdf):
+                self.drag_mode = "resize"
+                self.status_var.set("Resizing selected stamp.")
+            else:
+                self.drag_mode = "move"
+                self.drag_offset_x = x_pdf - item.x0
+                self.drag_offset_y = y_pdf - item.y0
+                self.status_var.set("Moving selected item.")
+        self._refresh_overlays()
+
+    def on_canvas_drag(self, event: tk.Event) -> None:
+        if self.doc is None or self.selected_index is None or self.drag_mode is None:
+            return
+        items = self._current_page_items()
+        if not (0 <= self.selected_index < len(items)):
+            return
+        x_pdf, y_pdf = self._canvas_to_pdf(event)
+        page_rect = self.doc.load_page(self.page_index).rect
+        placement = items[self.selected_index]
+
+        if self.drag_mode == "move":
+            width = placement.x1 - placement.x0
+            height = placement.y1 - placement.y0
+            new_x0 = min(max(page_rect.x0, x_pdf - self.drag_offset_x), page_rect.x1 - width)
+            new_y0 = min(max(page_rect.y0, y_pdf - self.drag_offset_y), page_rect.y1 - height)
+            placement.x0 = new_x0
+            placement.y0 = new_y0
+            placement.x1 = new_x0 + width
+            placement.y1 = new_y0 + height
+            self._refresh_overlays()
+            return
+
+        if self.drag_mode == "resize" and placement.kind in ("signature", "initials"):
+            min_width = page_rect.width * 0.03
+            aspect = (placement.y1 - placement.y0) / max(1e-6, placement.x1 - placement.x0)
+            target_w = max(min_width, x_pdf - placement.x0)
+            target_h = max(min_width * aspect, y_pdf - placement.y0)
+            new_w = max(target_w, target_h / max(aspect, 1e-6))
+            new_h = new_w * aspect
+
+            max_w = page_rect.x1 - placement.x0
+            max_h = page_rect.y1 - placement.y0
+            if new_w > max_w:
+                new_w = max_w
+                new_h = new_w * aspect
+            if new_h > max_h:
+                new_h = max_h
+                new_w = new_h / max(aspect, 1e-6)
+
+            placement.x1 = placement.x0 + max(min_width, new_w)
+            placement.y1 = placement.y0 + max(min_width * aspect, new_h)
+            self._refresh_overlays()
+
+    def on_canvas_release(self, _event: tk.Event) -> None:
+        if self.drag_mode == "resize" and self.selected_index is not None:
+            items = self._current_page_items()
+            if 0 <= self.selected_index < len(items):
+                item = items[self.selected_index]
+                if item.kind in ("signature", "initials"):
+                    self.last_stamp_sizes[item.kind] = (item.x1 - item.x0, item.y1 - item.y0)
+        self.drag_mode = None
+
+    def delete_selected(self, _event: tk.Event = None) -> None:
+        if self.doc is None or self.selected_index is None:
+            return
+        items = self._current_page_items()
+        if 0 <= self.selected_index < len(items):
+            del items[self.selected_index]
+            self.selected_index = None
+            self.status_var.set("Deleted selected item.")
+            self._refresh_overlays()
+
+    def clear_page_items(self) -> None:
+        if self.doc is None:
+            return
+        self.page_placements[self.page_index] = []
+        self.selected_index = None
+        self._refresh_overlays()
+
+    def prev_page(self) -> None:
+        if self.doc is None:
+            return
+        if self.page_index > 0:
+            self.page_index -= 1
+            self.selected_index = None
+            self.drag_mode = None
+            self._render_page()
+
+    def next_page(self) -> None:
+        if self.doc is None:
+            return
+        if self.page_index < self.doc.page_count - 1:
+            self.page_index += 1
+            self.selected_index = None
+            self.drag_mode = None
+            self._render_page()
+
+    def _stamp_to_png_bytes(self, stamp: Image.Image, placement: Placement) -> bytes:
+        width = max(1, int(placement.x1 - placement.x0))
+        height = max(1, int(placement.y1 - placement.y0))
+        resized = stamp.resize((width, height), Image.Resampling.LANCZOS)
+
+        alpha = resized.getchannel("A")
+        black = Image.new("RGBA", resized.size, (0, 0, 0, 255))
+        black.putalpha(alpha)
+        output = io.BytesIO()
+        black.save(output, format="PNG")
+        return output.getvalue()
+
+    def save_signed_pdf(self) -> None:
+        if self.doc is None or self.pdf_path is None:
+            messagebox.showwarning("No PDF", "Open a PDF first.")
+            return
+        save_path = filedialog.asksaveasfilename(
+            title="Save Signed PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile=f"{Path(self.pdf_path).stem}_signed.pdf",
+        )
+        if not save_path:
+            return
+
+        try:
+            signed_doc = fitz.open(self.pdf_path)
+            for page_idx, items in self.page_placements.items():
+                if not items:
+                    continue
+                page = signed_doc.load_page(page_idx)
+                for item in items:
+                    rect = fitz.Rect(item.x0, item.y0, item.x1, item.y1)
+                    if item.kind in ("signature", "initials"):
+                        stamp = self.stamps.get(item.kind)
+                        if stamp is None:
+                            continue
+                        png_bytes = self._stamp_to_png_bytes(stamp, item)
+                        page.insert_image(
+                            rect,
+                            stream=png_bytes,
+                            overlay=True,
+                            keep_proportion=False,
+                        )
+                    elif item.kind == "text":
+                        page.insert_textbox(
+                            rect,
+                            item.text,
+                            fontsize=item.font_size,
+                            fontname="helv",
+                            color=(0, 0, 0),
+                            align=0,
+                        )
+
+            signed_doc.save(save_path, deflate=True)
+            signed_doc.close()
+        except Exception as exc:
+            messagebox.showerror("Save failed", f"Could not save signed PDF:\n{exc}")
+            return
+
+        self.status_var.set(f"Signed PDF saved: {save_path}")
+        messagebox.showinfo("Success", f"Saved signed PDF:\n{save_path}")
+
+
+def main() -> None:
+    app_root = tk.Tk()
+    PdfSigningApp(app_root)
+    app_root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
