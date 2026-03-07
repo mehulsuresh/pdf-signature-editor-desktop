@@ -263,6 +263,7 @@ class PdfSigningApp:
         self.available_signature_fonts = self._find_signature_fonts()
 
         self.active_tool = tk.StringVar(value="signature")
+        self.last_place_tool = "signature"
         self.text_var = tk.StringVar(value="Approved")
         self.text_size_var = tk.StringVar(value="16")
         self.ink_color_name_var = tk.StringVar(value="Black")
@@ -276,6 +277,7 @@ class PdfSigningApp:
         self.selection_rect_id = None
         self.resize_handle_id = None
 
+        self.active_tool.trace_add("write", self._on_active_tool_changed)
         self._build_ui()
         self._load_saved_stamps()
 
@@ -435,16 +437,21 @@ class PdfSigningApp:
             return
         self.ink_color_hex = self.INK_COLORS.get(color_name, "#000000")
         self._apply_color_to_selected_item()
-        self.status_var.set(f"Ink color set to {color_name}. New signature/initial placements will use it.")
+        self.status_var.set(f"Ink color set to {color_name}. New signature/initial/text placements will use it.")
 
     def pick_custom_ink_color(self) -> None:
-        chosen = colorchooser.askcolor(color=self.ink_color_hex, title="Choose Signature Color", parent=self.root)
+        chosen = colorchooser.askcolor(color=self.ink_color_hex, title="Choose Ink Color", parent=self.root)
         if not chosen or not chosen[1]:
             return
         self.ink_color_hex = chosen[1]
         self.ink_color_name_var.set("Custom")
         self._apply_color_to_selected_item()
         self.status_var.set(f"Custom ink color selected: {self.ink_color_hex}")
+
+    def _on_active_tool_changed(self, *_args) -> None:
+        tool = self.active_tool.get()
+        if tool in ("signature", "initials", "text"):
+            self.last_place_tool = tool
 
     def _find_signature_fonts(self) -> dict[str, Optional[str]]:
         fonts_dir = Path("C:/Windows/Fonts")
@@ -479,6 +486,10 @@ class PdfSigningApp:
         except ValueError:
             return (0, 0, 0)
 
+    def _fitz_color(self, color_hex: str) -> tuple[float, float, float]:
+        r, g, b = self._parse_hex_color(color_hex)
+        return (r / 255.0, g / 255.0, b / 255.0)
+
     def _tint_stamp(self, stamp: Image.Image, color_hex: str) -> Image.Image:
         r, g, b = self._parse_hex_color(color_hex)
         alpha = stamp.getchannel("A")
@@ -493,8 +504,6 @@ class PdfSigningApp:
         if not (0 <= self.selected_index < len(items)):
             return
         item = items[self.selected_index]
-        if item.kind not in ("signature", "initials"):
-            return
         item.color = self.ink_color_hex
         self._refresh_overlays()
 
@@ -683,7 +692,7 @@ class PdfSigningApp:
                     y0,
                     anchor="nw",
                     text=placement.text,
-                    fill="black",
+                    fill=placement.color,
                     font=("Arial", display_font_size),
                 )
                 self.overlay_text_ids.append(text_id)
@@ -793,6 +802,7 @@ class PdfSigningApp:
             self.last_stamp_sizes[tool] = (rect.width, rect.height)
             self.selected_index = len(items) - 1
             self.status_var.set("Placed stamp. Use Select/Move and drag the blue corner to resize.")
+            self.active_tool.set("select")
             self._refresh_overlays()
             return
 
@@ -815,12 +825,14 @@ class PdfSigningApp:
                     y0=rect.y0,
                     x1=rect.x1,
                     y1=rect.y1,
+                    color=self.ink_color_hex,
                     text=text,
                     font_size=font_size,
                 )
             )
             self.selected_index = len(items) - 1
             self.status_var.set("Placed text. Use Select/Move to reposition.")
+            self.active_tool.set("select")
             self._refresh_overlays()
 
     def on_canvas_press(self, event: tk.Event) -> None:
@@ -842,8 +854,7 @@ class PdfSigningApp:
         self.drag_mode = None
         if hit_idx is not None:
             item = self._current_page_items()[hit_idx]
-            if item.kind in ("signature", "initials"):
-                self._sync_ink_controls_with_color(item.color)
+            self._sync_ink_controls_with_color(item.color)
             if item.kind in ("signature", "initials") and self._over_resize_handle(item, x_pdf, y_pdf):
                 self.drag_mode = "resize"
                 self.status_var.set("Resizing selected stamp.")
@@ -927,6 +938,8 @@ class PdfSigningApp:
         if self.doc is None:
             return
         if self.page_index > 0:
+            if self.active_tool.get() == "select":
+                self.active_tool.set(self.last_place_tool)
             self.page_index -= 1
             self.selected_index = None
             self.drag_mode = None
@@ -936,6 +949,8 @@ class PdfSigningApp:
         if self.doc is None:
             return
         if self.page_index < self.doc.page_count - 1:
+            if self.active_tool.get() == "select":
+                self.active_tool.set(self.last_place_tool)
             self.page_index += 1
             self.selected_index = None
             self.drag_mode = None
@@ -996,13 +1011,12 @@ class PdfSigningApp:
                             keep_proportion=False,
                         )
                     elif item.kind == "text":
-                        page.insert_textbox(
-                            rect,
+                        page.insert_text(
+                            fitz.Point(item.x0, item.y0 + item.font_size),
                             item.text,
                             fontsize=item.font_size,
                             fontname="helv",
-                            color=(0, 0, 0),
-                            align=0,
+                            color=self._fitz_color(item.color),
                         )
 
             signed_doc.save(save_path, deflate=True)
