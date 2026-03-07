@@ -20,6 +20,7 @@ Draw signatures and initials, drop them anywhere in a PDF, add text boxes, and e
 - Open any PDF
 - Draw and save `signature` and `initials`
 - Create typed signatures in cursive-style fonts (no drawing required)
+- Create typed initials in cursive-style fonts (no drawing required)
 - Choose ink color for signatures/initials (preset or custom)
 - Place signatures/initials with one click
 - Move items with drag-and-drop
@@ -45,7 +46,9 @@ python app.py
 2. Create a signature with either:
    - `Draw Signature`
    - `Type Signature` (cursive-style font)
-3. Draw initials.
+3. Create initials with either:
+   - `Draw Initials`
+   - `Type Initials` (cursive-style font)
 4. Pick an `Ink` color.
 5. Choose `Place Signature`, `Place Initials`, or `Place Text`.
 6. Click on the page to place.

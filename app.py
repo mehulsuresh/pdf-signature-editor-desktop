@@ -110,14 +110,21 @@ class SignaturePad(tk.Toplevel):
 
 
 class TypedSignatureDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, font_options: dict[str, Optional[str]]):
+    def __init__(
+        self,
+        master: tk.Misc,
+        font_options: dict[str, Optional[str]],
+        title: str = "Typed Signature",
+        default_text: str = "Your Name",
+        field_label: str = "Name",
+    ):
         super().__init__(master)
-        self.title("Typed Signature")
+        self.title(title)
         self.resizable(False, False)
         self.grab_set()
 
         self.font_options = font_options
-        self.name_var = tk.StringVar(value="Your Name")
+        self.name_var = tk.StringVar(value=default_text)
         self.style_var = tk.StringVar(value=next(iter(font_options.keys())))
         self.size_var = tk.StringVar(value="96")
         self.result = None
@@ -126,7 +133,7 @@ class TypedSignatureDialog(tk.Toplevel):
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(1, weight=1)
 
-        ttk.Label(frame, text="Name").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Label(frame, text=field_label).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
         ttk.Entry(frame, textvariable=self.name_var, width=32).grid(row=0, column=1, sticky="ew", pady=(0, 6))
 
         ttk.Label(frame, text="Style").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
@@ -279,6 +286,7 @@ class PdfSigningApp:
         ttk.Button(toolbar, text="Draw Signature", command=lambda: self.draw_stamp("signature")).pack(side="left")
         ttk.Button(toolbar, text="Type Signature", command=self.type_signature).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Draw Initials", command=lambda: self.draw_stamp("initials")).pack(side="left", padx=(6, 0))
+        ttk.Button(toolbar, text="Type Initials", command=self.type_initials).pack(side="left", padx=(6, 0))
         ttk.Label(toolbar, text="Ink:").pack(side="left", padx=(10, 4))
         self.ink_color_combo = ttk.Combobox(
             toolbar,
@@ -387,12 +395,34 @@ class PdfSigningApp:
         self._render_page()
 
     def type_signature(self) -> None:
-        dialog = TypedSignatureDialog(self.root, self.available_signature_fonts)
+        dialog = TypedSignatureDialog(
+            self.root,
+            self.available_signature_fonts,
+            title="Typed Signature",
+            default_text="Your Name",
+            field_label="Name",
+        )
         self.root.wait_window(dialog)
         if dialog.result is None:
             return
         self.stamps["signature"] = dialog.result
         self._save_stamp_to_disk("signature")
+        self._set_status_for_missing_stamps()
+        self._render_page()
+
+    def type_initials(self) -> None:
+        dialog = TypedSignatureDialog(
+            self.root,
+            self.available_signature_fonts,
+            title="Typed Initials",
+            default_text="YS",
+            field_label="Initials",
+        )
+        self.root.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.stamps["initials"] = dialog.result
+        self._save_stamp_to_disk("initials")
         self._set_status_for_missing_stamps()
         self._render_page()
 
