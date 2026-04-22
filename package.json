@@ -1,0 +1,37 @@
+{
+  "name": "signcanvas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-first PDF signing editor built with Tauri, React, and TypeScript.",
+  "author": "Mehul Suresh",
+  "license": "MIT",
+  "homepage": "https://github.com/mehulsuresh/pdf-signature-editor-desktop#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mehulsuresh/pdf-signature-editor-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mehulsuresh/pdf-signature-editor-desktop/issues"
+  },
+  "keywords": [
+    "pdf",
+    "signature",
+    "tauri",
+    "react",
+    "typescript",
+    "desktop-app",
+    "local-first"
+  ],
+  "workspaces": [
+    "apps/signcanvas-editor"
+  ],
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "npm run dev:web --workspace signcanvas-editor",
+    "dev:desktop": "npm run dev:desktop --workspace signcanvas-editor",
+    "build": "npm run build:web",
+    "build:web": "npm run build:web --workspace signcanvas-editor",
+    "build:desktop": "npm run build:desktop --workspace signcanvas-editor",
+    "test": "npm run test --workspace signcanvas-editor"
+  }
+}

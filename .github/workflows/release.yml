@@ -1,0 +1,160 @@
+name: Release SignCanvas
+
+# Triggers a cross-platform build and publishes a draft GitHub Release
+# with the installers attached whenever you push a tag like `v1.2.3`.
+#
+# Workflow:
+#   1. Bump version in apps/signcanvas-editor/package.json and
+#      apps/signcanvas-editor/src-tauri/tauri.conf.json.
+#   2. Commit, then:
+#        git tag v1.2.3
+#        git push origin v1.2.3
+#   3. The Actions tab will show the build. When it finishes, go to
+#      the Releases page, review the draft, and click "Publish".
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.0)"
+        required: true
+        type: string
+
+jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+      release_tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const tag = "${{ steps.resolve.outputs.tag }}";
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `SignCanvas ${tag}`,
+              body: [
+                `## SignCanvas ${tag}`,
+                "",
+                "See `CHANGELOG` or commit history for details.",
+                "",
+                "### Downloads",
+                "- **Windows:** `.msi` installer",
+                "- **macOS (Apple Silicon):** `.dmg`",
+                "- **macOS (Intel):** `.dmg`",
+                "- **Linux:** `.AppImage` / `.deb`",
+                "",
+                "All binaries are built in CI directly from this tag.",
+              ].join("\n"),
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
+    name: ${{ matrix.label }}
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            platform: windows-latest
+            args: ""
+          - label: Ubuntu
+            platform: ubuntu-22.04
+            args: ""
+          - label: macOS Apple Silicon
+            platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+            rustTargets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - label: macOS Intel
+            platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+            rustTargets: "aarch64-apple-darwin,x86_64-apple-darwin"
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Rust stable
+        if: matrix.platform != 'macos-latest'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust stable with macOS targets
+        if: matrix.platform == 'macos-latest'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./apps/signcanvas-editor/src-tauri -> target"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build and attach to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/signcanvas-editor
+          args: ${{ matrix.args }}
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+
+  finalize:
+    name: Summary
+    needs: [create-release, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print release URL
+        run: |
+          echo "Draft release created for tag ${{ needs.create-release.outputs.release_tag }}."
+          echo "Review and publish it from the Releases page:"
+          echo "https://github.com/${{ github.repository }}/releases"

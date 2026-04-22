@@ -1,0 +1,48 @@
+{
+  "name": "signcanvas-editor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:web": "vite",
+    "dev:desktop": "tauri dev",
+    "build:web": "tsc -b && vite build",
+    "build:desktop": "tauri build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/alex-brush": "^5.2.8",
+    "@fontsource/allura": "^5.2.7",
+    "@fontsource/cormorant-garamond": "^5.2.7",
+    "@fontsource/great-vibes": "^5.2.8",
+    "@fontsource/inter": "^5.2.8",
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.1",
+    "@tauri-apps/plugin-fs": "^2.4.2",
+    "clsx": "^2.1.1",
+    "localforage": "^1.10.0",
+    "lucide-react": "^0.511.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.394",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^26.1.0",
+    "playwright": "^1.59.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.2",
+    "vitest": "^3.2.4"
+  }
+}

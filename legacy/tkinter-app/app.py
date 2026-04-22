@@ -231,6 +231,20 @@ class PdfSigningApp:
     APP_TITLE = "SignCanvas PDF"
     EXPORT_STAMP_DPI = 300
     MAX_EXPORT_STAMP_DIM = 4096
+    PALETTE = {
+        "bg": "#F5F1E8",
+        "panel": "#FCFAF6",
+        "panel_alt": "#F0E7D8",
+        "stroke": "#D7C8B3",
+        "text": "#211A17",
+        "muted": "#6D645B",
+        "accent": "#B85C38",
+        "accent_dark": "#954728",
+        "accent_soft": "#F6DDD0",
+        "canvas_bg": "#E8DED0",
+        "canvas_panel": "#FFFDF9",
+        "white": "#FFFFFF",
+    }
     INK_COLORS = {
         "Black": "#000000",
         "Blue": "#1D4ED8",
@@ -244,7 +258,9 @@ class PdfSigningApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(self.APP_TITLE)
-        self.root.geometry("1180x900")
+        self.root.geometry("1400x940")
+        self.root.minsize(1180, 820)
+        self.root.configure(bg=self.PALETTE["bg"])
 
         self.pdf_path = None
         self.doc = None
@@ -261,6 +277,12 @@ class PdfSigningApp:
         self.overlay_canvas_ids = []
         self.overlay_text_ids = []
         self.available_signature_fonts = self._find_signature_fonts()
+        self.stamp_preview_labels = {}
+        self.stamp_status_labels = {}
+        self.stamp_preview_images = {}
+        self.mode_buttons = {}
+        self.sidebar_canvas = None
+        self.sidebar_window_id = None
 
         self.active_tool = tk.StringVar(value="signature")
         self.last_place_tool = "signature"
@@ -269,6 +291,11 @@ class PdfSigningApp:
         self.ink_color_name_var = tk.StringVar(value="Black")
         self.ink_color_hex = self.INK_COLORS["Black"]
         self.status_var = tk.StringVar(value="Open a PDF, then place signature/initials/text.")
+        self.document_name_var = tk.StringVar(value="No PDF loaded yet")
+        self.document_meta_var = tk.StringVar(value="Open a file to start placing signatures and text.")
+        self.page_info_var = tk.StringVar(value="Page 0 / 0")
+        self.zoom_info_var = tk.StringVar(value="Zoom 100%")
+        self.selection_summary_var = tk.StringVar(value="Nothing selected yet.")
 
         self.selected_index: Optional[int] = None
         self.drag_mode = None
@@ -278,75 +305,453 @@ class PdfSigningApp:
         self.resize_handle_id = None
 
         self.active_tool.trace_add("write", self._on_active_tool_changed)
+        self._configure_theme()
         self._build_ui()
         self._load_saved_stamps()
+        self._update_document_summary()
+        self._update_selection_summary()
+        self._update_mode_buttons()
+        self._update_ink_swatch()
+        self._render_page()
+
+    def _configure_theme(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=self.PALETTE["bg"], foreground=self.PALETTE["text"], font=("Segoe UI", 10))
+        style.configure("App.TFrame", background=self.PALETTE["bg"])
+        style.configure("Card.TFrame", background=self.PALETTE["panel"])
+        style.configure("SidebarCard.TFrame", background=self.PALETTE["panel_alt"])
+        style.configure("Inset.TFrame", background=self.PALETTE["panel"])
+        style.configure(
+            "Title.TLabel",
+            background=self.PALETTE["panel"],
+            foreground=self.PALETTE["text"],
+            font=("Segoe UI Semibold", 11),
+        )
+        style.configure(
+            "SidebarTitle.TLabel",
+            background=self.PALETTE["panel_alt"],
+            foreground=self.PALETTE["text"],
+            font=("Segoe UI Semibold", 11),
+        )
+        style.configure("Body.TLabel", background=self.PALETTE["panel"], foreground=self.PALETTE["text"], font=("Segoe UI", 10))
+        style.configure(
+            "SidebarBody.TLabel",
+            background=self.PALETTE["panel_alt"],
+            foreground=self.PALETTE["text"],
+            font=("Segoe UI", 10),
+        )
+        style.configure("Muted.TLabel", background=self.PALETTE["panel"], foreground=self.PALETTE["muted"], font=("Segoe UI", 9))
+        style.configure(
+            "SidebarMuted.TLabel",
+            background=self.PALETTE["panel_alt"],
+            foreground=self.PALETTE["muted"],
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "Primary.TButton",
+            background=self.PALETTE["accent"],
+            foreground=self.PALETTE["white"],
+            borderwidth=0,
+            focusthickness=0,
+            padding=(14, 10),
+            font=("Segoe UI Semibold", 10),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", self.PALETTE["accent_dark"])],
+            foreground=[("disabled", "#F2E8E3")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background=self.PALETTE["panel_alt"],
+            foreground=self.PALETTE["text"],
+            borderwidth=1,
+            padding=(12, 9),
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        style.map("Secondary.TButton", background=[("active", "#E7D8C4")])
+        style.configure("Tool.TButton", background=self.PALETTE["panel"], foreground=self.PALETTE["text"], padding=(10, 8), relief="flat")
+        style.map("Tool.TButton", background=[("active", "#F3E5D8")])
+        style.configure(
+            "TEntry",
+            fieldbackground=self.PALETTE["white"],
+            foreground=self.PALETTE["text"],
+            bordercolor=self.PALETTE["stroke"],
+            insertcolor=self.PALETTE["text"],
+            padding=6,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=self.PALETTE["white"],
+            background=self.PALETTE["white"],
+            foreground=self.PALETTE["text"],
+            bordercolor=self.PALETTE["stroke"],
+            arrowsize=14,
+            padding=5,
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=self.PALETTE["white"],
+            foreground=self.PALETTE["text"],
+            bordercolor=self.PALETTE["stroke"],
+            arrowsize=14,
+            padding=5,
+        )
+
+    def _make_mode_button(self, parent: tk.Misc, label: str, value: str, row: int, column: int) -> None:
+        button = tk.Button(
+            parent,
+            text=label,
+            command=lambda: self.active_tool.set(value),
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            font=("Segoe UI Semibold", 10),
+            padx=14,
+            pady=12,
+            activeforeground=self.PALETTE["text"],
+        )
+        button.grid(row=row, column=column, sticky="nsew", padx=4, pady=4)
+        self.mode_buttons[value] = button
+
+    def _sync_sidebar_scrollregion(self, _event: tk.Event = None) -> None:
+        if self.sidebar_canvas is None:
+            return
+        self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all"))
+
+    def _resize_sidebar_window(self, event: tk.Event) -> None:
+        if self.sidebar_canvas is None or self.sidebar_window_id is None:
+            return
+        self.sidebar_canvas.itemconfigure(self.sidebar_window_id, width=event.width)
+
+    def _on_sidebar_mouse_wheel(self, event: tk.Event) -> str:
+        if self.sidebar_canvas is None:
+            return "break"
+        delta = getattr(event, "delta", 0)
+        num = getattr(event, "num", 0)
+        wheel_up = delta > 0 or num == 4
+        wheel_down = delta < 0 or num == 5
+        if wheel_up:
+            self.sidebar_canvas.yview_scroll(-3, "units")
+        elif wheel_down:
+            self.sidebar_canvas.yview_scroll(3, "units")
+        return "break"
 
     def _build_ui(self) -> None:
-        toolbar = ttk.Frame(self.root, padding=8)
-        toolbar.pack(side="top", fill="x")
+        main = ttk.Frame(self.root, style="App.TFrame", padding=18)
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
 
-        ttk.Button(toolbar, text="Open PDF", command=self.open_pdf).pack(side="left")
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(toolbar, text="Draw Signature", command=lambda: self.draw_stamp("signature")).pack(side="left")
-        ttk.Button(toolbar, text="Type Signature", command=self.type_signature).pack(side="left", padx=(6, 0))
-        ttk.Button(toolbar, text="Import Signature PNG", command=self.import_signature_png).pack(side="left", padx=(6, 0))
-        ttk.Button(toolbar, text="Draw Initials", command=lambda: self.draw_stamp("initials")).pack(side="left", padx=(6, 0))
-        ttk.Button(toolbar, text="Type Initials", command=self.type_initials).pack(side="left", padx=(6, 0))
-        ttk.Label(toolbar, text="Ink:").pack(side="left", padx=(10, 4))
+        sidebar_shell = tk.Frame(main, bg=self.PALETTE["bg"], bd=0, highlightthickness=0, width=354)
+        sidebar_shell.grid(row=0, column=0, sticky="nsw", padx=(0, 18))
+        sidebar_shell.grid_propagate(False)
+        sidebar_shell.rowconfigure(0, weight=1)
+        sidebar_shell.columnconfigure(0, weight=1)
+
+        self.sidebar_canvas = tk.Canvas(sidebar_shell, bg=self.PALETTE["bg"], width=354, highlightthickness=0, bd=0)
+        self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
+        sidebar_scrollbar = ttk.Scrollbar(sidebar_shell, orient="vertical", command=self.sidebar_canvas.yview)
+        sidebar_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.sidebar_canvas.configure(yscrollcommand=sidebar_scrollbar.set)
+
+        sidebar = ttk.Frame(self.sidebar_canvas, style="App.TFrame")
+        sidebar.columnconfigure(0, weight=1)
+        self.sidebar_window_id = self.sidebar_canvas.create_window((0, 0), window=sidebar, anchor="nw")
+        sidebar.bind("<Configure>", self._sync_sidebar_scrollregion)
+        self.sidebar_canvas.bind("<Configure>", self._resize_sidebar_window)
+        self.sidebar_canvas.bind("<MouseWheel>", self._on_sidebar_mouse_wheel)
+        self.sidebar_canvas.bind("<Button-4>", self._on_sidebar_mouse_wheel)
+        self.sidebar_canvas.bind("<Button-5>", self._on_sidebar_mouse_wheel)
+
+        hero = tk.Frame(sidebar, bg=self.PALETTE["accent"], bd=0, highlightthickness=0)
+        hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        tk.Label(
+            hero,
+            text="SignCanvas PDF",
+            bg=self.PALETTE["accent"],
+            fg=self.PALETTE["white"],
+            font=("Georgia", 22, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=18, pady=(16, 4))
+        tk.Label(
+            hero,
+            text="A warmer, calmer signing workspace for clean local PDF edits.",
+            bg=self.PALETTE["accent"],
+            fg="#F9EDE6",
+            font=("Segoe UI", 10),
+            justify="left",
+            wraplength=290,
+            anchor="w",
+        ).pack(fill="x", padx=18, pady=(0, 14))
+
+        document_card = ttk.Frame(sidebar, style="SidebarCard.TFrame", padding=14)
+        document_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        document_card.columnconfigure(0, weight=1)
+        ttk.Label(document_card, text="Document", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            document_card,
+            textvariable=self.document_name_var,
+            style="SidebarBody.TLabel",
+            font=("Segoe UI Semibold", 12),
+            wraplength=285,
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 3))
+        ttk.Label(
+            document_card,
+            textvariable=self.document_meta_var,
+            style="SidebarMuted.TLabel",
+            wraplength=285,
+            justify="left",
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        document_actions = ttk.Frame(document_card, style="SidebarCard.TFrame")
+        document_actions.grid(row=3, column=0, sticky="ew")
+        document_actions.columnconfigure(0, weight=1)
+        document_actions.columnconfigure(1, weight=1)
+        ttk.Button(document_actions, text="Open PDF", command=self.open_pdf, style="Primary.TButton").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(document_actions, text="Save Signed PDF", command=self.save_signed_pdf, style="Secondary.TButton").grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        asset_card = ttk.Frame(sidebar, style="SidebarCard.TFrame", padding=14)
+        asset_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        asset_card.columnconfigure(0, weight=1)
+        ttk.Label(asset_card, text="Signature Assets", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            asset_card,
+            text="Create your signature once, then reuse it across every page.",
+            style="SidebarMuted.TLabel",
+            wraplength=285,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
+
+        for row_index, kind in enumerate(("signature", "initials"), start=2):
+            item_frame = ttk.Frame(asset_card, style="Inset.TFrame", padding=10)
+            item_frame.grid(row=row_index, column=0, sticky="ew", pady=(0, 10))
+            item_frame.columnconfigure(1, weight=1)
+            preview = tk.Label(
+                item_frame,
+                text="Not ready yet",
+                justify="center",
+                bg=self.PALETTE["white"],
+                fg=self.PALETTE["muted"],
+                width=16,
+                height=4,
+                highlightthickness=1,
+                highlightbackground=self.PALETTE["stroke"],
+                font=("Segoe UI", 9),
+            )
+            preview.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
+            title = "Signature" if kind == "signature" else "Initials"
+            ttk.Label(item_frame, text=title, style="Title.TLabel").grid(row=0, column=1, sticky="w")
+            status_label = ttk.Label(
+                item_frame,
+                text="Missing",
+                style="Muted.TLabel",
+                wraplength=150,
+                justify="left",
+            )
+            status_label.grid(row=1, column=1, sticky="w", pady=(2, 10))
+
+            button_row = ttk.Frame(item_frame, style="Card.TFrame")
+            button_row.grid(row=2, column=1, sticky="ew")
+            if kind == "signature":
+                ttk.Button(button_row, text="Draw", command=lambda k=kind: self.draw_stamp(k), style="Tool.TButton").pack(side="left")
+                ttk.Button(button_row, text="Type", command=self.type_signature, style="Tool.TButton").pack(side="left", padx=(6, 0))
+                ttk.Button(button_row, text="Import", command=self.import_signature_png, style="Tool.TButton").pack(side="left", padx=(6, 0))
+            else:
+                ttk.Button(button_row, text="Draw", command=lambda k=kind: self.draw_stamp(k), style="Tool.TButton").pack(side="left")
+                ttk.Button(button_row, text="Type", command=self.type_initials, style="Tool.TButton").pack(side="left", padx=(6, 0))
+
+            self.stamp_preview_labels[kind] = preview
+            self.stamp_status_labels[kind] = status_label
+
+        mode_card = ttk.Frame(sidebar, style="SidebarCard.TFrame", padding=14)
+        mode_card.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        mode_card.columnconfigure(0, weight=1)
+        ttk.Label(mode_card, text="Placement Mode", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            mode_card,
+            text="Choose what you want to place, then click directly on the page.",
+            style="SidebarMuted.TLabel",
+            wraplength=285,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 10))
+        mode_grid = tk.Frame(mode_card, bg=self.PALETTE["panel_alt"], bd=0, highlightthickness=0)
+        mode_grid.grid(row=2, column=0, sticky="ew")
+        mode_grid.grid_columnconfigure(0, weight=1)
+        mode_grid.grid_columnconfigure(1, weight=1)
+        self._make_mode_button(mode_grid, "Place Signature", "signature", 0, 0)
+        self._make_mode_button(mode_grid, "Place Initials", "initials", 0, 1)
+        self._make_mode_button(mode_grid, "Place Text", "text", 1, 0)
+        self._make_mode_button(mode_grid, "Select / Move", "select", 1, 1)
+
+        text_card = ttk.Frame(sidebar, style="SidebarCard.TFrame", padding=14)
+        text_card.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+        text_card.columnconfigure(0, weight=1)
+        ttk.Label(text_card, text="Text And Ink", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w", columnspan=2)
+        ttk.Label(text_card, text="Text", style="SidebarMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 4))
+        ttk.Entry(text_card, textvariable=self.text_var).grid(row=2, column=0, columnspan=2, sticky="ew")
+        ttk.Label(text_card, text="Text Size", style="SidebarMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 4))
+        ttk.Spinbox(text_card, from_=8, to=96, textvariable=self.text_size_var, width=8).grid(row=4, column=0, sticky="w")
+        ttk.Label(text_card, text="Ink", style="SidebarMuted.TLabel").grid(row=5, column=0, sticky="w", pady=(12, 4))
+        ink_row = ttk.Frame(text_card, style="SidebarCard.TFrame")
+        ink_row.grid(row=6, column=0, columnspan=2, sticky="ew")
+        ink_row.columnconfigure(1, weight=1)
+        self.ink_swatch = tk.Label(
+            ink_row,
+            width=2,
+            bg=self.ink_color_hex,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.PALETTE["stroke"],
+        )
+        self.ink_swatch.grid(row=0, column=0, padx=(0, 8), sticky="ns")
         self.ink_color_combo = ttk.Combobox(
-            toolbar,
+            ink_row,
             textvariable=self.ink_color_name_var,
             state="readonly",
-            width=8,
             values=list(self.INK_COLORS.keys()),
+            width=12,
         )
-        self.ink_color_combo.pack(side="left")
+        self.ink_color_combo.grid(row=0, column=1, sticky="ew")
         self.ink_color_combo.bind("<<ComboboxSelected>>", self.on_ink_color_change)
-        ttk.Button(toolbar, text="Custom Ink", command=self.pick_custom_ink_color).pack(side="left", padx=(6, 0))
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Radiobutton(toolbar, text="Place Signature", variable=self.active_tool, value="signature").pack(side="left")
-        ttk.Radiobutton(toolbar, text="Place Initials", variable=self.active_tool, value="initials").pack(side="left", padx=(6, 0))
-        ttk.Radiobutton(toolbar, text="Place Text", variable=self.active_tool, value="text").pack(side="left", padx=(6, 0))
-        ttk.Radiobutton(toolbar, text="Select/Move", variable=self.active_tool, value="select").pack(side="left", padx=(6, 0))
+        ttk.Button(text_card, text="Choose Custom Ink", command=self.pick_custom_ink_color, style="Secondary.TButton").grid(
+            row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+        )
 
-        ttk.Label(toolbar, text="Text:").pack(side="left", padx=(10, 4))
-        ttk.Entry(toolbar, textvariable=self.text_var, width=18).pack(side="left")
-        ttk.Label(toolbar, text="Size:").pack(side="left", padx=(8, 4))
-        ttk.Spinbox(toolbar, from_=8, to=96, textvariable=self.text_size_var, width=4).pack(side="left")
+        cleanup_row = ttk.Frame(text_card, style="SidebarCard.TFrame")
+        cleanup_row.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        cleanup_row.columnconfigure(0, weight=1)
+        cleanup_row.columnconfigure(1, weight=1)
+        ttk.Button(cleanup_row, text="Delete Selected", command=self.delete_selected, style="Tool.TButton").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(cleanup_row, text="Clear This Page", command=self.clear_page_items, style="Tool.TButton").grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(toolbar, text="Delete Selected", command=self.delete_selected).pack(side="left")
-        ttk.Button(toolbar, text="Save Signed PDF", command=self.save_signed_pdf).pack(side="left", padx=(8, 0))
+        tips_card = ttk.Frame(sidebar, style="SidebarCard.TFrame", padding=14)
+        tips_card.grid(row=5, column=0, sticky="ew")
+        tips_card.columnconfigure(0, weight=1)
+        ttk.Label(tips_card, text="Helpful Flow", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            tips_card,
+            text="1. Open a PDF\n2. Create a signature or initials\n3. Click the page to place\n4. Switch to Select / Move to fine-tune\n5. Save a clean signed copy",
+            style="SidebarMuted.TLabel",
+            justify="left",
+            wraplength=285,
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 10))
+        ttk.Label(
+            tips_card,
+            text="Shortcuts: Delete removes the selected item. Ctrl + mouse wheel zooms. Ctrl + 0 fits the page.",
+            style="SidebarMuted.TLabel",
+            justify="left",
+            wraplength=285,
+        ).grid(row=2, column=0, sticky="ew")
 
-        nav = ttk.Frame(self.root, padding=(8, 2, 8, 8))
-        nav.pack(side="top", fill="x")
+        content = ttk.Frame(main, style="App.TFrame")
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
 
-        ttk.Button(nav, text="Prev Page", command=self.prev_page).pack(side="left")
-        ttk.Button(nav, text="Next Page", command=self.next_page).pack(side="left", padx=(6, 0))
-        ttk.Button(nav, text="Clear Page Items", command=self.clear_page_items).pack(side="left", padx=(16, 0))
-        ttk.Separator(nav, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(nav, text="Zoom -", command=self.zoom_out).pack(side="left")
-        ttk.Button(nav, text="Zoom +", command=self.zoom_in).pack(side="left", padx=(6, 0))
-        ttk.Button(nav, text="Fit", command=self.zoom_fit).pack(side="left", padx=(6, 0))
+        header_card = ttk.Frame(content, style="Card.TFrame", padding=16)
+        header_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        header_card.columnconfigure(1, weight=1)
+        ttk.Label(header_card, text="Editor Workspace", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header_card,
+            text="Everything happens directly on the page: place, drag, resize, then export.",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
-        self.zoom_label = ttk.Label(nav, text="Zoom: 100%")
-        self.zoom_label.pack(side="left", padx=12)
+        chip_row = ttk.Frame(header_card, style="Card.TFrame")
+        chip_row.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.page_label = tk.Label(
+            chip_row,
+            textvariable=self.page_info_var,
+            bg=self.PALETTE["accent_soft"],
+            fg=self.PALETTE["accent_dark"],
+            font=("Segoe UI Semibold", 10),
+            padx=12,
+            pady=6,
+        )
+        self.page_label.pack(side="left", padx=(0, 8))
+        self.zoom_label = tk.Label(
+            chip_row,
+            textvariable=self.zoom_info_var,
+            bg="#EFE6D8",
+            fg=self.PALETTE["text"],
+            font=("Segoe UI Semibold", 10),
+            padx=12,
+            pady=6,
+        )
+        self.zoom_label.pack(side="left")
 
-        self.page_label = ttk.Label(nav, text="Page: -/-")
-        self.page_label.pack(side="left", padx=16)
-        ttk.Label(nav, textvariable=self.status_var).pack(side="left")
+        controls = ttk.Frame(header_card, style="Card.TFrame")
+        controls.grid(row=2, column=0, columnspan=2, sticky="ew")
+        controls.columnconfigure(0, weight=1)
 
-        canvas_container = ttk.Frame(self.root)
-        canvas_container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        canvas_container.rowconfigure(0, weight=1)
-        canvas_container.columnconfigure(0, weight=1)
+        controls_top = ttk.Frame(controls, style="Card.TFrame")
+        controls_top.grid(row=0, column=0, sticky="w")
+        ttk.Button(controls_top, text="Prev Page", command=self.prev_page, style="Secondary.TButton").pack(side="left")
+        ttk.Button(controls_top, text="Next Page", command=self.next_page, style="Secondary.TButton").pack(side="left", padx=(8, 0))
+        ttk.Separator(controls_top, orient="vertical").pack(side="left", fill="y", padx=12)
+        ttk.Button(controls_top, text="Zoom -", command=self.zoom_out, style="Tool.TButton").pack(side="left")
+        ttk.Button(controls_top, text="Zoom +", command=self.zoom_in, style="Tool.TButton").pack(side="left", padx=(6, 0))
+        ttk.Button(controls_top, text="Fit Page", command=self.zoom_fit, style="Tool.TButton").pack(side="left", padx=(6, 0))
 
-        self.canvas = tk.Canvas(canvas_container, bg="#d0d0d0")
+        ttk.Label(
+            controls,
+            textvariable=self.selection_summary_var,
+            style="Muted.TLabel",
+            wraplength=860,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(12, 0))
+
+        canvas_shell = ttk.Frame(content, style="Card.TFrame", padding=16)
+        canvas_shell.grid(row=1, column=0, sticky="nsew")
+        canvas_shell.columnconfigure(0, weight=1)
+        canvas_shell.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            canvas_shell,
+            text="Click to place items. Drag to move them. Grab the lower-right corner of a signature or initials block to resize.",
+            style="Body.TLabel",
+            wraplength=900,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew")
+        self.status_banner = tk.Label(
+            canvas_shell,
+            textvariable=self.status_var,
+            anchor="w",
+            justify="left",
+            bg=self.PALETTE["accent_soft"],
+            fg=self.PALETTE["text"],
+            font=("Segoe UI", 10),
+            padx=12,
+            pady=10,
+            wraplength=900,
+        )
+        self.status_banner.grid(row=1, column=0, sticky="ew", pady=(12, 14))
+
+        canvas_frame = tk.Frame(
+            canvas_shell,
+            bg=self.PALETTE["canvas_bg"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.PALETTE["stroke"],
+        )
+        canvas_frame.grid(row=2, column=0, sticky="nsew")
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(canvas_frame, bg=self.PALETTE["canvas_bg"], highlightthickness=0, bd=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        ybar = ttk.Scrollbar(canvas_container, orient="vertical", command=self.canvas.yview)
+        ybar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
         ybar.grid(row=0, column=1, sticky="ns")
-        xbar = ttk.Scrollbar(canvas_container, orient="horizontal", command=self.canvas.xview)
+        xbar = ttk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
         xbar.grid(row=1, column=0, sticky="ew")
         self.canvas.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
@@ -367,6 +772,125 @@ class PdfSigningApp:
         self.root.bind("<Control-minus>", lambda _e: self.zoom_out())
         self.root.bind("<Control-0>", lambda _e: self.zoom_fit())
 
+    def _update_mode_buttons(self) -> None:
+        active_tool = self.active_tool.get()
+        for value, button in self.mode_buttons.items():
+            is_active = value == active_tool
+            button.configure(
+                bg=self.PALETTE["accent"] if is_active else self.PALETTE["white"],
+                fg=self.PALETTE["white"] if is_active else self.PALETTE["text"],
+                activebackground=self.PALETTE["accent_dark"] if is_active else "#F3E6D7",
+            )
+
+    def _update_document_summary(self) -> None:
+        if self.doc is None or self.pdf_path is None:
+            self.document_name_var.set("No PDF loaded yet")
+            self.document_meta_var.set("Open a file to start placing signatures and text.")
+            self.page_info_var.set("Page 0 / 0")
+            self.zoom_info_var.set("Zoom 100%")
+            return
+
+        total_items = sum(len(items) for items in self.page_placements.values())
+        current_items = len(self._current_page_items())
+        self.document_name_var.set(Path(self.pdf_path).name)
+        self.document_meta_var.set(f"{self.doc.page_count} pages | {total_items} total items | {current_items} on this page")
+        self.page_info_var.set(f"Page {self.page_index + 1} / {self.doc.page_count}")
+        self.zoom_info_var.set(f"Zoom {int(self.zoom_factor * 100)}%")
+
+    def _update_ink_swatch(self) -> None:
+        if hasattr(self, "ink_swatch"):
+            self.ink_swatch.configure(bg=self.ink_color_hex)
+
+    def _make_stamp_preview_image(self, stamp: Image.Image) -> Image.Image:
+        preview = Image.new("RGBA", (180, 88), self.PALETTE["white"])
+        draw = ImageDraw.Draw(preview)
+        border = self._parse_hex_color(self.PALETTE["stroke"])
+        draw.rounded_rectangle((0, 0, 179, 87), radius=16, outline=border, width=1, fill=self.PALETTE["white"])
+        tinted = self._tint_stamp(stamp, self.ink_color_hex).copy()
+        tinted.thumbnail((145, 56), Image.Resampling.LANCZOS)
+        offset_x = (preview.width - tinted.width) // 2
+        offset_y = (preview.height - tinted.height) // 2
+        preview.alpha_composite(tinted, (offset_x, offset_y))
+        return preview
+
+    def _update_stamp_previews(self) -> None:
+        for kind, label in self.stamp_preview_labels.items():
+            stamp = self.stamps.get(kind)
+            status_label = self.stamp_status_labels[kind]
+            if stamp is None:
+                label.configure(image="", text="Not ready yet", compound="center")
+                self.stamp_preview_images[kind] = None
+                hint = "Create one to unlock one-click placement."
+            else:
+                preview_image = ImageTk.PhotoImage(self._make_stamp_preview_image(stamp))
+                self.stamp_preview_images[kind] = preview_image
+                label.configure(image=preview_image, text="", compound="center")
+                hint = "Saved locally and ready to place."
+            status_label.configure(text=hint)
+
+    def _update_selection_summary(self) -> None:
+        if self.doc is None:
+            self.selection_summary_var.set("Open a PDF to start building your signed version.")
+            return
+
+        items = self._current_page_items()
+        if self.selected_index is None or not (0 <= self.selected_index < len(items)):
+            self.selection_summary_var.set(f"{len(items)} item(s) on this page. Choose a mode, then click anywhere on the page.")
+            return
+
+        item = items[self.selected_index]
+        width = item.x1 - item.x0
+        height = item.y1 - item.y0
+        label = item.kind.title()
+        self.selection_summary_var.set(f"Selected {label} | {int(width)} x {int(height)} pt | drag to move or refine placement.")
+
+    def _show_empty_state(self) -> None:
+        self.root.update_idletasks()
+        width = max(self.canvas.winfo_width(), 900)
+        height = max(self.canvas.winfo_height(), 640)
+        self.canvas.delete("all")
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+
+        panel_width = min(620, width - 100)
+        panel_height = 290
+        x0 = (width - panel_width) / 2
+        y0 = (height - panel_height) / 2
+        x1 = x0 + panel_width
+        y1 = y0 + panel_height
+
+        self.canvas.create_rectangle(0, 0, width, height, fill=self.PALETTE["canvas_bg"], outline="")
+        self.canvas.create_rectangle(x0, y0, x1, y1, fill=self.PALETTE["canvas_panel"], outline=self.PALETTE["stroke"], width=2)
+        self.canvas.create_text(
+            width / 2,
+            y0 + 52,
+            text="Open a PDF to begin",
+            fill=self.PALETTE["text"],
+            font=("Georgia", 24, "bold"),
+        )
+        self.canvas.create_text(
+            width / 2,
+            y0 + 102,
+            text="This workspace is ready for signatures, initials, and approval text.\nBring in a PDF and the page will appear here.",
+            fill=self.PALETTE["muted"],
+            font=("Segoe UI", 12),
+            justify="center",
+        )
+        self.canvas.create_text(
+            width / 2,
+            y0 + 184,
+            text="Suggested flow",
+            fill=self.PALETTE["accent_dark"],
+            font=("Segoe UI Semibold", 12),
+        )
+        self.canvas.create_text(
+            width / 2,
+            y0 + 228,
+            text="1. Open your PDF\n2. Create a signature or initials\n3. Click the page to place items\n4. Drag to adjust and save",
+            fill=self.PALETTE["text"],
+            font=("Segoe UI", 11),
+            justify="center",
+        )
+
     def _load_saved_stamps(self) -> None:
         for kind, path in self.STAMP_FILES.items():
             if path.exists():
@@ -375,6 +899,7 @@ class PdfSigningApp:
                 except Exception:
                     self.stamps[kind] = None
         self._set_status_for_missing_stamps()
+        self._update_stamp_previews()
 
     def _save_stamp_to_disk(self, kind: str) -> None:
         stamp = self.stamps[kind]
@@ -385,9 +910,11 @@ class PdfSigningApp:
     def _set_status_for_missing_stamps(self) -> None:
         missing = [k for k, v in self.stamps.items() if v is None]
         if missing:
-            self.status_var.set(f"Missing {' and '.join(missing)}. Draw them before placing.")
+            names = " and ".join(name.title() for name in missing)
+            self.status_var.set(f"{names} not ready yet. Create them from the sidebar, then click on the page to place them.")
         else:
-            self.status_var.set("Use Place tools to add items, set ink color, or Select/Move to resize and reposition.")
+            self.status_var.set("Everything is ready. Choose a placement mode, click the page, then drag to fine-tune.")
+        self._update_stamp_previews()
 
     def draw_stamp(self, kind: str) -> None:
         pad = SignaturePad(self.root, f"Draw {kind.title()}")
@@ -396,7 +923,9 @@ class PdfSigningApp:
             return
         self.stamps[kind] = pad.result
         self._save_stamp_to_disk(kind)
-        self._set_status_for_missing_stamps()
+        self.active_tool.set(kind)
+        self.status_var.set(f"{kind.title()} saved. Click anywhere on the page to place it.")
+        self._update_stamp_previews()
         self._render_page()
 
     def type_signature(self) -> None:
@@ -412,7 +941,9 @@ class PdfSigningApp:
             return
         self.stamps["signature"] = dialog.result
         self._save_stamp_to_disk("signature")
-        self._set_status_for_missing_stamps()
+        self.active_tool.set("signature")
+        self.status_var.set("Typed signature saved. Click on the page to place it.")
+        self._update_stamp_previews()
         self._render_page()
 
     def type_initials(self) -> None:
@@ -428,7 +959,9 @@ class PdfSigningApp:
             return
         self.stamps["initials"] = dialog.result
         self._save_stamp_to_disk("initials")
-        self._set_status_for_missing_stamps()
+        self.active_tool.set("initials")
+        self.status_var.set("Typed initials saved. Click on the page to place them.")
+        self._update_stamp_previews()
         self._render_page()
 
     def import_signature_png(self) -> None:
@@ -450,8 +983,9 @@ class PdfSigningApp:
 
         self.stamps["signature"] = processed
         self._save_stamp_to_disk("signature")
-        self._set_status_for_missing_stamps()
-        self.status_var.set("Imported signature and auto-processed (background removed + contrast boosted).")
+        self.active_tool.set("signature")
+        self.status_var.set("Signature imported and cleaned up. Click on the page to place it.")
+        self._update_stamp_previews()
         self._render_page()
 
     def on_ink_color_change(self, _event: tk.Event = None) -> None:
@@ -461,7 +995,9 @@ class PdfSigningApp:
             return
         self.ink_color_hex = self.INK_COLORS.get(color_name, "#000000")
         self._apply_color_to_selected_item()
-        self.status_var.set(f"Ink color set to {color_name}. New signature/initial/text placements will use it.")
+        self._update_ink_swatch()
+        self._update_stamp_previews()
+        self.status_var.set(f"Ink color set to {color_name}. New placements will use it.")
 
     def pick_custom_ink_color(self) -> None:
         chosen = colorchooser.askcolor(color=self.ink_color_hex, title="Choose Ink Color", parent=self.root)
@@ -470,12 +1006,16 @@ class PdfSigningApp:
         self.ink_color_hex = chosen[1]
         self.ink_color_name_var.set("Custom")
         self._apply_color_to_selected_item()
-        self.status_var.set(f"Custom ink color selected: {self.ink_color_hex}")
+        self._update_ink_swatch()
+        self._update_stamp_previews()
+        self.status_var.set(f"Custom ink selected: {self.ink_color_hex}")
 
     def _on_active_tool_changed(self, *_args) -> None:
         tool = self.active_tool.get()
         if tool in ("signature", "initials", "text"):
             self.last_place_tool = tool
+        self._update_mode_buttons()
+        self._update_selection_summary()
 
     def _find_signature_fonts(self) -> dict[str, Optional[str]]:
         fonts_dir = Path("C:/Windows/Fonts")
@@ -571,8 +1111,12 @@ class PdfSigningApp:
                 continue
             if value.lower() == normalized:
                 self.ink_color_name_var.set(name)
+                self._update_ink_swatch()
+                self._update_stamp_previews()
                 return
         self.ink_color_name_var.set("Custom")
+        self._update_ink_swatch()
+        self._update_stamp_previews()
 
     def _close_document(self) -> None:
         if self.doc is not None:
@@ -581,12 +1125,17 @@ class PdfSigningApp:
         self.pdf_path = None
         self.page_index = 0
         self.zoom_factor = 1.0
+        self.page_scale = 1.0
         self.page_placements = {}
         self.selected_index = None
         self.drag_mode = None
+        self.current_photo = None
+        self.canvas_image_id = None
         self.canvas.delete("all")
-        self.page_label.configure(text="Page: -/-")
-        self.zoom_label.configure(text="Zoom: 100%")
+        self.status_var.set("Open a PDF to start signing.")
+        self._update_document_summary()
+        self._update_selection_summary()
+        self._show_empty_state()
 
     def open_pdf(self) -> None:
         path = filedialog.askopenfilename(
@@ -610,6 +1159,7 @@ class PdfSigningApp:
         self.zoom_factor = 1.0
         self.page_placements = {}
         self.selected_index = None
+        self.status_var.set("PDF loaded. Choose a placement mode and click on the page.")
         self._render_page()
 
     def _fit_scale_for_page(self, page_rect: fitz.Rect) -> float:
@@ -683,7 +1233,11 @@ class PdfSigningApp:
         self.overlay_text_ids.clear()
         self.selection_rect_id = None
         self.resize_handle_id = None
+        self.canvas_image_id = None
         if self.doc is None:
+            self._update_document_summary()
+            self._update_selection_summary()
+            self._show_empty_state()
             return
 
         page = self.doc.load_page(self.page_index)
@@ -697,8 +1251,8 @@ class PdfSigningApp:
 
         self.canvas_image_id = self.canvas.create_image(0, 0, anchor="nw", image=self.current_photo)
         self.canvas.configure(scrollregion=(0, 0, pix.width, pix.height))
-        self.page_label.configure(text=f"Page: {self.page_index + 1}/{self.doc.page_count}")
-        self.zoom_label.configure(text=f"Zoom: {int(self.zoom_factor * 100)}%")
+        self._update_document_summary()
+        self._update_selection_summary()
         self._draw_overlays_for_page()
 
     def _clear_overlay_visuals(self) -> None:
@@ -719,6 +1273,8 @@ class PdfSigningApp:
             return
         self._clear_overlay_visuals()
         self._draw_overlays_for_page()
+        self._update_document_summary()
+        self._update_selection_summary()
 
     def _draw_overlays_for_page(self) -> None:
         items = self._current_page_items()
@@ -760,7 +1316,7 @@ class PdfSigningApp:
                     y0,
                     x1,
                     y1,
-                    outline="#0078d7",
+                    outline=self.PALETTE["accent"],
                     width=2,
                     dash=(4, 3),
                 )
@@ -772,8 +1328,8 @@ class PdfSigningApp:
                         y1 - hs,
                         x1 + hs,
                         y1 + hs,
-                        fill="#0078d7",
-                        outline="#005a9e",
+                        fill=self.PALETTE["accent"],
+                        outline=self.PALETTE["accent_dark"],
                         width=1,
                     )
                     self.overlay_canvas_ids.append(self.resize_handle_id)
@@ -842,7 +1398,7 @@ class PdfSigningApp:
         if tool in ("signature", "initials"):
             stamp = self.stamps.get(tool)
             if stamp is None:
-                self.status_var.set(f"Draw your {tool} first.")
+                self.status_var.set(f"{tool.title()} is not ready yet. Create it from the sidebar first.")
                 return
             rect = self._make_default_rect(page_rect, x_pdf, y_pdf, tool)
             items.append(
@@ -857,7 +1413,7 @@ class PdfSigningApp:
             )
             self.last_stamp_sizes[tool] = (rect.width, rect.height)
             self.selected_index = len(items) - 1
-            self.status_var.set("Placed stamp. Use Select/Move and drag the blue corner to resize.")
+            self.status_var.set(f"{tool.title()} placed. Drag it to move, or use the lower-right handle to resize.")
             self.active_tool.set("select")
             self._refresh_overlays()
             return
@@ -865,7 +1421,7 @@ class PdfSigningApp:
         if tool == "text":
             text = self.text_var.get().strip()
             if not text:
-                self.status_var.set("Enter text before placing a text box.")
+                self.status_var.set("Add some text in the sidebar before placing a text box.")
                 return
             try:
                 font_size = float(self.text_size_var.get())
@@ -887,13 +1443,13 @@ class PdfSigningApp:
                 )
             )
             self.selected_index = len(items) - 1
-            self.status_var.set("Placed text. Use Select/Move to reposition.")
+            self.status_var.set("Text placed. Drag it to the perfect spot.")
             self.active_tool.set("select")
             self._refresh_overlays()
 
     def on_canvas_press(self, event: tk.Event) -> None:
         if self.doc is None:
-            self.status_var.set("Open a PDF first.")
+            self.status_var.set("Open a PDF first, then this canvas becomes interactive.")
             return
         x_pdf, y_pdf = self._canvas_to_pdf(event)
         if not self._point_inside_page(x_pdf, y_pdf):
@@ -913,12 +1469,14 @@ class PdfSigningApp:
             self._sync_ink_controls_with_color(item.color)
             if item.kind in ("signature", "initials") and self._over_resize_handle(item, x_pdf, y_pdf):
                 self.drag_mode = "resize"
-                self.status_var.set("Resizing selected stamp.")
+                self.status_var.set("Resizing the selected stamp.")
             else:
                 self.drag_mode = "move"
                 self.drag_offset_x = x_pdf - item.x0
                 self.drag_offset_y = y_pdf - item.y0
-                self.status_var.set("Moving selected item.")
+                self.status_var.set("Moving the selected item.")
+        else:
+            self.status_var.set("Nothing selected. Click an item to edit it, or choose a placement mode.")
         self._refresh_overlays()
 
     def on_canvas_drag(self, event: tk.Event) -> None:
@@ -980,7 +1538,7 @@ class PdfSigningApp:
         if 0 <= self.selected_index < len(items):
             del items[self.selected_index]
             self.selected_index = None
-            self.status_var.set("Deleted selected item.")
+            self.status_var.set("Selected item deleted.")
             self._refresh_overlays()
 
     def clear_page_items(self) -> None:
@@ -988,6 +1546,7 @@ class PdfSigningApp:
             return
         self.page_placements[self.page_index] = []
         self.selected_index = None
+        self.status_var.set("Cleared all items from the current page.")
         self._refresh_overlays()
 
     def prev_page(self) -> None:
@@ -1081,7 +1640,7 @@ class PdfSigningApp:
             messagebox.showerror("Save failed", f"Could not save signed PDF:\n{exc}")
             return
 
-        self.status_var.set(f"Signed PDF saved: {save_path}")
+        self.status_var.set(f"Signed PDF saved to {save_path}")
         messagebox.showinfo("Success", f"Saved signed PDF:\n{save_path}")
 
 

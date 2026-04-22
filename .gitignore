@@ -1,10 +1,45 @@
+# ---- Dependencies ----
+node_modules/
+
+# ---- Build output ----
+apps/signcanvas-editor/dist/
+apps/signcanvas-editor/src-tauri/target/
+apps/signcanvas-editor/vite.config.js
+apps/signcanvas-editor/vite.config.d.ts
+legacy/tkinter-app/build/
+legacy/tkinter-app/dist/
+coverage/
+*.tsbuildinfo
+
+# ---- Python (legacy app) ----
 __pycache__/
 .pytest_cache/
 .venv/
-build/
-dist/
-*.spec
 *.pyc
 *.pyo
 *.pyd
+
+# ---- User documents & sample inputs (never commit real user PDFs) ----
+# Top-level and apps/ PDFs should be treated as personal/private.
+/*.pdf
+apps/*.pdf
+apps/*.png
+apps/*.jpg
+apps/*.jpeg
+!apps/*/public/**
+
+# ---- Secrets & env ----
+.env
+.env.*
+!.env.example
+
+# ---- Logs & scratch ----
+*.log
+tmp_*
 *_stamp.png
+
+# ---- Editor / OS ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
