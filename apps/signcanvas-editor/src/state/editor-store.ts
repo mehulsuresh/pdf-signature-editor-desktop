@@ -195,4 +195,57 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             },
           }
         : state.lastPlacementSize;
-      return { placementsByPage,
+      return { placementsByPage, lastPlacementSize: nextLastPlacementSize };
+    });
+  },
+  deleteSelectedPlacement() {
+    const target = get().selectedPlacementId;
+    if (!target) {
+      return;
+    }
+    set((state) => ({
+      placementsByPage: Object.fromEntries(
+        Object.entries(state.placementsByPage).map(([pageIndex, placements]) => [
+          pageIndex,
+          placements.filter((placement) => placement.id !== target),
+        ]),
+      ),
+      selectedPlacementId: null,
+    }));
+  },
+  setPage(index) {
+    set((state) => state.document
+      ? {
+          document: {
+            ...state.document,
+            currentPageIndex: index,
+          },
+          selectedPlacementId: null,
+        }
+      : state);
+  },
+  openDrawModal(kind) {
+    set((state) => ({
+      ui: {
+        ...state.ui,
+        drawKind: kind,
+      },
+    }));
+  },
+  openTypedModal(kind) {
+    set((state) => ({
+      ui: {
+        ...state.ui,
+        typedKind: kind,
+      },
+    }));
+  },
+  openFinalize(open) {
+    set((state) => ({
+      ui: {
+        ...state.ui,
+        finalizeOpen: open,
+      },
+    }));
+  },
+}));

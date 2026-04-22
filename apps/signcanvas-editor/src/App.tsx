@@ -2225,4 +2225,102 @@ function TypedSignatureModal(props: {
               {text}
             </div>
           </div>
-          <div className="mt-2 border-t border-dashed border-canvas-stroke pt-2 text-[0.62rem] uppercase tracking-label text-canvas
+          <div className="mt-2 border-t border-dashed border-canvas-stroke pt-2 text-[0.62rem] uppercase tracking-label text-canvas-muted">
+            {kindLabel(props.kind)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button className={buttonClassName("soft")} onClick={props.onClose}>Cancel</button>
+        <button
+          className={buttonClassName("solid", !text.trim())}
+          disabled={!text.trim()}
+          onClick={async () => {
+            try {
+              const asset = await createTypedSignatureAsset({
+                kind: props.kind,
+                text,
+                fontFamily,
+                fontSize,
+                existingCount: props.existingCount,
+              });
+              props.onSave(asset);
+            } catch (error) {
+              window.alert((error as Error).message);
+            }
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function FinalizeModal(props: {
+  placementCount: number;
+  busy: boolean;
+  documentName: string;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  const fileName = props.documentName.replace(/\.pdf$/i, "") + "_signed.pdf";
+  return (
+    <ModalShell title="Export signed PDF" onClose={props.onCancel}>
+      <div className="flex items-center gap-3 rounded-xl border border-canvas-stroke bg-canvas-paper p-3.5">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-canvas-accent-soft text-canvas-accent">
+          <FileText className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-canvas-text">{fileName}</div>
+          <div className="mt-0.5 text-xs text-canvas-muted">
+            {props.placementCount} placement{props.placementCount === 1 ? "" : "s"} · Original PDF untouched
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 text-sm leading-6 text-canvas-muted">
+        A new signed copy will be saved alongside the original so you can review both.
+      </div>
+      <div className="mt-5 flex justify-end gap-2">
+        <button className={buttonClassName("soft", props.busy)} disabled={props.busy} onClick={props.onCancel}>Cancel</button>
+        <button className={buttonClassName("solid", props.busy || props.placementCount === 0)} disabled={props.busy || props.placementCount === 0} onClick={props.onConfirm}>
+          {props.busy ? (<><Loader2 className="h-4 w-4 animate-spin" />Exporting...</>) : (<><Download className="h-4 w-4" />Export PDF</>)}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalShell(props: { title: string; onClose(): void; children: ReactNode }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        props.onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [props]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-6 sc-fade-in">
+      <div className="absolute inset-0 bg-[rgba(42,33,28,0.45)] backdrop-blur-sm" onClick={props.onClose} />
+      <div className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[24px] border border-canvas-stroke bg-canvas-panel shadow-panel-lg sc-pop-in sm:rounded-2xl">
+        <div className="flex items-center justify-between gap-4 border-b border-canvas-stroke px-5 py-3">
+          <div className="font-display text-[1.5rem] font-semibold text-canvas-text">{props.title}</div>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-canvas-muted transition hover:bg-white hover:text-canvas-text"
+            onClick={props.onClose}
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="max-h-[78dvh] overflow-y-auto p-4 sm:max-h-[85vh] sm:p-5">{props.children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default App;

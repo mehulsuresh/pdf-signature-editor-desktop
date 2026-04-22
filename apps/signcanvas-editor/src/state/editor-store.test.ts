@@ -86,4 +86,43 @@ describe("editor store asset state", () => {
     expect(useEditorStore.getState().activeAssetIds.signature).toBe("sig-2");
   });
 
-  i
+  it("removes a saved asset and clears placements that use it", () => {
+    resetState();
+    useEditorStore.setState({
+      document: {
+        name: "lease.pdf",
+        originalBytes: new Uint8Array([1, 2, 3]),
+        pageCount: 1,
+        currentPageIndex: 0,
+      },
+    });
+    const store = useEditorStore.getState();
+    store.upsertAsset({
+      id: "sig-1",
+      kind: "signature",
+      source: "drawn",
+      label: "Signature 1",
+      imageDataUrl: "data:image/png;base64,AA==",
+      inkPreviewColor: "#111111",
+      width: 120,
+      height: 42,
+    });
+    store.addPlacement({
+      id: "placement-1",
+      pageIndex: 0,
+      kind: "signature",
+      assetId: "sig-1",
+      x0: 10,
+      y0: 20,
+      x1: 60,
+      y1: 38,
+      color: "#111111",
+    });
+
+    store.removeAsset("signature", "sig-1");
+
+    expect(useEditorStore.getState().assets.signature).toHaveLength(0);
+    expect(useEditorStore.getState().placementsByPage[0]).toEqual([]);
+    expect(useEditorStore.getState().activeAssetIds.signature).toBeNull();
+  });
+});
