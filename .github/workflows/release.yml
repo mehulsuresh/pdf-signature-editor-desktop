@@ -52,7 +52,7 @@ jobs:
           result-encoding: string
           script: |
             const tag = "${{ steps.resolve.outputs.tag }}";
-            const { data } = await github.rest.repos.createRelease({
+            const releasePayload = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
@@ -72,7 +72,33 @@ jobs:
               ].join("\n"),
               draft: true,
               prerelease: false,
-            });
+            };
+
+            let data;
+            try {
+              ({ data } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              }));
+
+              ({ data } = await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: data.id,
+                name: releasePayload.name,
+                body: releasePayload.body,
+                draft: releasePayload.draft,
+                prerelease: releasePayload.prerelease,
+              }));
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              ({ data } = await github.rest.repos.createRelease(releasePayload));
+            }
+
             return data.id;
 
   build:

@@ -78,5 +78,12 @@ jobs:
         with:
           projectPath: apps/signcanvas-editor
           args: ${{ matrix.args }}
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: "signcanvas-[platform]-[arch]-[bundle]"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signcanvas-${{ runner.os }}-${{ matrix.label }}
+          path: |
+            apps/signcanvas-editor/src-tauri/target/release/bundle/**
+            apps/signcanvas-editor/src-tauri/target/*/release/bundle/**
+          if-no-files-found: error
