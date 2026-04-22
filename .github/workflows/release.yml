@@ -52,9 +52,11 @@ jobs:
           result-encoding: string
           script: |
             const tag = "${{ steps.resolve.outputs.tag }}";
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
             const releasePayload = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               tag_name: tag,
               name: `SignCanvas ${tag}`,
               body: [
@@ -74,28 +76,35 @@ jobs:
               prerelease: false,
             };
 
-            let data;
-            try {
-              ({ data } = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag,
-              }));
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner,
+              repo,
+              per_page: 100,
+            });
 
+            const matches = releases
+              .filter((release) => release.tag_name === tag)
+              .sort((a, b) => {
+                const assetDelta = (b.assets?.length ?? 0) - (a.assets?.length ?? 0);
+                if (assetDelta !== 0) {
+                  return assetDelta;
+                }
+
+                return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+              });
+
+            let data;
+            if (matches.length > 0) {
               ({ data } = await github.rest.repos.updateRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: data.id,
+                owner,
+                repo,
+                release_id: matches[0].id,
                 name: releasePayload.name,
                 body: releasePayload.body,
                 draft: releasePayload.draft,
                 prerelease: releasePayload.prerelease,
               }));
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
-              }
-
+            } else {
               ({ data } = await github.rest.repos.createRelease(releasePayload));
             }
 
